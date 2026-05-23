@@ -66,124 +66,113 @@ class CheckoutView(APIView):
         cod_pct = Decimal(str(config.cod_surcharge_percentage)) if config else Decimal('2')
         tax_pct = Decimal(str(config.tax_percentage)) if config else Decimal('0')
 
-        # ── 2. Validate cart & build line items ──────────────────────────────
-        order_line_items = []
-        subtotal = Decimal('0.00')
-
-        for item in cart_items:
-            variant_id = item.get('variant_id')
-            product_id = item.get('product_id')
-            quantity = int(item.get('quantity', 1))
-
-            try:
-                if variant_id:
-                    variant = ProductVariant.objects.select_for_update().get(id=variant_id)
-                    product = variant.product
-                    server_price = product.price + variant.price_override
-                    variant_label = f"{variant.ram} / {variant.storage}"
-                    if variant.stock < quantity:
-                        return Response(
-                            {'error': f'Insufficient stock for {product.title} ({variant_label})'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                else:
-                    product = Product.objects.get(id=product_id)
-                    variant = None
-                    server_price = product.price
-                    variant_label = ''
-
-                subtotal += server_price * quantity
-                primary_img = product.images.filter(is_primary=True).first() or product.images.first()
-                img_url = request.build_absolute_uri(primary_img.image.url) if primary_img else ''
-
-                order_line_items.append({
-                    'product': product,
-                    'variant': variant,
-                    'product_name': product.title,
-                    'variant_label': variant_label,
-                    'price': server_price,
-                    'quantity': quantity,
-                    'image_url': img_url,
-                })
-            except (ProductVariant.DoesNotExist, Product.DoesNotExist):
-                return Response({'error': 'Product not found'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ── 3. Coupon ────────────────────────────────────────────────────────
-        discount_amount = Decimal('0.00')
-        coupon_obj = None
-
-        if coupon_code:
-            try:
-                coupon = Coupon.objects.get(code=coupon_code, active=True)
-                now = timezone.now()
-                if coupon.valid_from > now or coupon.valid_to < now:
-                    return Response({'error': 'Coupon has expired'}, status=status.HTTP_400_BAD_REQUEST)
-                if coupon.uses_count >= coupon.usage_limit:
-                    return Response({'error': 'Coupon usage limit reached'}, status=status.HTTP_400_BAD_REQUEST)
-                if subtotal < coupon.min_order_value:
-                    return Response(
-                        {'error': f'Minimum order of ₹{coupon.min_order_value} required'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                if coupon.discount_type == 'percentage':
-                    discount_amount = (subtotal * coupon.value) / 100
-                else:
-                    discount_amount = coupon.value
-                coupon_obj = coupon
-            except Coupon.DoesNotExist:
-                return Response({'error': 'Invalid coupon code'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ── 4. Exchange code ─────────────────────────────────────────────────
-        exchange_obj = None
-        exchange_discount = Decimal('0.00')
-
-        if exchange_code_input:
-            try:
-                exchange_obj = ExchangeCode.objects.get(code=exchange_code_input, is_used=False)
-                # Validate expiry
-                if exchange_obj.expires_at and exchange_obj.expires_at < timezone.now():
-                    return Response({'error': 'Exchange code has expired'}, status=status.HTTP_400_BAD_REQUEST)
-                # Validate minimum order value (new order must be >= original order value)
-                if subtotal < exchange_obj.original_order_value:
-                    return Response(
-                        {'error': f'New order must be at least ₹{exchange_obj.original_order_value} (equal or higher value exchange only)'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                # Exchange discount = full original order value (they get that value for free)
-                exchange_discount = exchange_obj.original_order_value
-            except ExchangeCode.DoesNotExist:
-                return Response({'error': 'Invalid or already used exchange code'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ── 5. Fee calculations ──────────────────────────────────────────────
-        # Apply coupon first, then exchange discount
-        taxable = max(Decimal('0'), subtotal - discount_amount - exchange_discount)
-        tax_amount = (taxable * tax_pct) / 100
-
-        if free_threshold > 0 and subtotal >= free_threshold:
-            shipping_fee = Decimal('0.00')
-        else:
-            shipping_fee = shipping_flat
-
-        # COD fee on original subtotal (before discounts), as per business rule
-        cod_fee = (subtotal * cod_pct / 100) if payment_method == 'COD' else Decimal('0.00')
-
-        total_amount = taxable + tax_amount + shipping_fee + cod_fee
-
-        # ── 6. Shipping address ──────────────────────────────────────────────
-        first_name = data.get('first_name', '')
-        last_name = data.get('last_name', '')
-        phone = data.get('phone', '')
-        address = data.get('address', '')
-        apartment = data.get('apartment', '')
-        landmark = data.get('landmark', '')
-        city = data.get('city', '')
-        state = data.get('state', '')
-        zip_code = data.get('zip_code', '')
-        country = data.get('country', 'India')
-
-        # ── 7. Create order atomically ───────────────────────────────────────
+        # ── Start Transaction Block ──
+        # We wrap the entire logic in atomic() to support select_for_update()
         try:
             with transaction.atomic():
+                # ── 2. Validate cart & build line items ──────────────────────────────
+                order_line_items = []
+                subtotal = Decimal('0.00')
+
+                for item in cart_items:
+                    variant_id = item.get('variant_id')
+                    product_id = item.get('product_id')
+                    quantity = int(item.get('quantity', 1))
+
+                    if variant_id:
+                        # select_for_update() is now legally inside a transaction[cite: 1]
+                        variant = ProductVariant.objects.select_for_update().get(id=variant_id)
+                        product = variant.product
+                        server_price = product.price + variant.price_override
+                        variant_label = f"{variant.ram} / {variant.storage}"
+                        if variant.stock < quantity:
+                            return Response(
+                                {'error': f'Insufficient stock for {product.title} ({variant_label})'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                    else:
+                        product = Product.objects.get(id=product_id)
+                        variant = None
+                        server_price = product.price
+                        variant_label = ''
+
+                    subtotal += server_price * quantity
+                    primary_img = product.images.filter(is_primary=True).first() or product.images.first()
+                    img_url = request.build_absolute_uri(primary_img.image.url) if primary_img else ''
+
+                    order_line_items.append({
+                        'product': product,
+                        'variant': variant,
+                        'product_name': product.title,
+                        'variant_label': variant_label,
+                        'price': server_price,
+                        'quantity': quantity,
+                        'image_url': img_url,
+                    })
+
+                # ── 3. Coupon ────────────────────────────────────────────────────────
+                discount_amount = Decimal('0.00')
+                coupon_obj = None
+
+                if coupon_code:
+                    try:
+                        coupon = Coupon.objects.get(code=coupon_code, active=True)
+                        now = timezone.now()
+                        if coupon.valid_from > now or coupon.valid_to < now:
+                            return Response({'error': 'Coupon has expired'}, status=status.HTTP_400_BAD_REQUEST)
+                        if coupon.uses_count >= coupon.usage_limit:
+                            return Response({'error': 'Coupon usage limit reached'}, status=status.HTTP_400_BAD_REQUEST)
+                        if subtotal < coupon.min_order_value:
+                            return Response(
+                                {'error': f'Minimum order of ₹{coupon.min_order_value} required'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        if coupon.discount_type == 'percentage':
+                            discount_amount = (subtotal * coupon.value) / 100
+                        else:
+                            discount_amount = coupon.value
+                        coupon_obj = coupon
+                    except Coupon.DoesNotExist:
+                        return Response({'error': 'Invalid coupon code'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # ── 4. Exchange code ─────────────────────────────────────────────────
+                exchange_obj = None
+                exchange_discount = Decimal('0.00')
+
+                if exchange_code_input:
+                    try:
+                        exchange_obj = ExchangeCode.objects.get(code=exchange_code_input, is_used=False)
+                        if exchange_obj.expires_at and exchange_obj.expires_at < timezone.now():
+                            return Response({'error': 'Exchange code has expired'}, status=status.HTTP_400_BAD_REQUEST)
+                        if subtotal < exchange_obj.original_order_value:
+                            return Response(
+                                {'error': f'New order must be at least ₹{exchange_obj.original_order_value} (equal or higher value exchange only)'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        exchange_discount = exchange_obj.original_order_value
+                    except ExchangeCode.DoesNotExist:
+                        return Response({'error': 'Invalid or already used exchange code'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # ── 5. Fee calculations ──────────────────────────────────────────────
+                taxable = max(Decimal('0'), subtotal - discount_amount - exchange_discount)
+                tax_amount = (taxable * tax_pct) / 100
+                shipping_fee = Decimal('0.00') if (free_threshold > 0 and subtotal >= free_threshold) else shipping_flat
+                cod_fee = (subtotal * cod_pct / 100) if payment_method == 'COD' else Decimal('0.00')
+                total_amount = taxable + tax_amount + shipping_fee + cod_fee
+
+                # ── 6. Shipping address ──────────────────────────────────────────────
+                first_name = data.get('first_name', '')
+                last_name = data.get('last_name', '')
+                phone = data.get('phone', '')
+                address = data.get('address', '')
+                apartment = data.get('apartment', '')
+                landmark = data.get('landmark', '')
+                city = data.get('city', '')
+                state = data.get('state', '')
+                zip_code = data.get('zip_code', '')
+                country = data.get('country', 'India')
+
+                # ── 7. Create order ──────────────────────────────────────────────────
                 order = Order.objects.create(
                     user=request.user,
                     first_name=first_name,
@@ -222,43 +211,28 @@ class CheckoutView(APIView):
                         quantity=item['quantity'],
                         image_url=item['image_url'],
                     )
-                    # Deduct stock for COD immediately
                     if payment_method == 'COD' and item['variant']:
                         v = item['variant']
                         v.stock -= item['quantity']
                         v.save()
 
-                # Mark exchange code as used
                 if exchange_obj:
                     exchange_obj.is_used = True
                     exchange_obj.used_at = timezone.now()
                     exchange_obj.save()
 
-                # Save default address
                 if save_as_default:
                     SavedAddress.objects.filter(user=request.user, is_default=True).update(is_default=False)
                     SavedAddress.objects.create(
-                        user=request.user,
-                        label='Home',
-                        first_name=first_name,
-                        last_name=last_name,
-                        address=address,
-                        apartment=apartment,
-                        landmark=landmark,
-                        city=city,
-                        state=state,
-                        zip_code=zip_code,
-                        country=country,
-                        phone=phone,
-                        is_default=True,
+                        user=request.user, label='Home', first_name=first_name, last_name=last_name,
+                        address=address, apartment=apartment, landmark=landmark, city=city,
+                        state=state, zip_code=zip_code, country=country, phone=phone, is_default=True,
                     )
 
-                # Increment coupon usage
                 if coupon_obj:
                     coupon_obj.uses_count += 1
                     coupon_obj.save()
 
-                # COD — done
                 if payment_method == 'COD':
                     return Response({
                         'order_id': order.id,
@@ -281,9 +255,11 @@ class CheckoutView(APIView):
                     'payment_method': 'Online',
                 }, status=status.HTTP_201_CREATED)
 
+        except (ProductVariant.DoesNotExist, Product.DoesNotExist):
+            return Response({'error': 'Product not found'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
+            # Atomic block ensures DB rollbacks if third-party APIs (Razorpay) or code fails[cite: 1]
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class CancelOrderView(APIView):
     """

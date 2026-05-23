@@ -3,15 +3,20 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 import datetime
-
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = ['*']
-
+ALLOWED_HOSTS = [
+    'api.yuvacomputers.in',
+    'admin.yuvacomputers.in',
+    'yuvacomputers.in', # Add this
+    'www.yuvacomputers.in', # Add this
+    '103.138.96.2'
+]
 SIMPLE_JWT = {
     'LEEWAY': 60, 
 }
@@ -81,24 +86,40 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
 
+DATABASES = {
+      'default': dj_database_url.config(
+           default=os.environ.get('DATABASE_URL'),
+           conn_max_age=600,
+           ssl_require=False 
+    )
+}
+	
 AUTH_USER_MODEL = 'accounts.CustomUser'
+
 
 # --- REST FRAMEWORK ---
 REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour',
+    },
 }
+
+
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
@@ -119,6 +140,7 @@ SOCIALACCOUNT_PROVIDERS = {
         'SCOPE': ['profile', 'email'],
         'AUTH_PARAMS': {'access_type': 'online'},
         'OAUTH_PKCE_ENABLED': True,
+        'FETCH_USERINFO' : True,
     }
 }
 
@@ -129,16 +151,24 @@ ACCOUNT_USER_MODEL_USERNAME_FIELD = None
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
 SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 
+
 # --- CORS ---
 CORS_ALLOWED_ORIGINS = [
+    "https://yuvacomputers.in",
+    "https://www.yuvacomputers.in",
+    "https://api.yuvacomputers.in",
+    "https://admin.yuvacomputers.in",
     "http://localhost:5173",
-    "http://localhost:8080",
-    "http://127.0.0.1:5173",
 ]
+
+
 CORS_ALLOW_CREDENTIALS = True
+
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:8080",
+    "https://yuvacomputers.in",
+    "https://www.yuvacomputers.in",
+    "https://api.yuvacomputers.in",
+    "https://admin.yuvacomputers.in",
 ]
 SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin-allow-popups"
 
@@ -182,3 +212,20 @@ JAZZMIN_SETTINGS = {
     "navigation_expanded": True,
     "changeform_format": "single",
 }
+# Production Security (only active when DEBUG is False)
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    
+    # HSTS Configuration
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    
+    # Proxy Headers for Nginx
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    USE_X_FORWARDED_HOST = True
