@@ -1,3 +1,4 @@
+# orders/admin.py
 from django.contrib import admin
 from django.http import HttpResponse
 from django.utils import timezone
@@ -10,12 +11,19 @@ def export_to_csv(modeladmin, request, queryset):
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename=orders.csv'
     writer = csv.writer(response)
-    writer.writerow(['Order ID', 'Name', 'Email', 'Phone', 'Total', 'Payment Method', 'Payment Status', 'Order Status', 'City', 'State', 'Date'])
+    writer.writerow([
+        'Order ID', 'Name', 'Email', 'Phone', 'Total',
+        'Payment Method', 'Payment Status', 'Order Status',
+        'City', 'State', 'Delhivery Waybill', 'WhatsApp Sent', 'Date'
+    ])
     for o in queryset:
         writer.writerow([
             o.id, f"{o.first_name} {o.last_name}", o.email, o.phone,
             o.total_amount, o.payment_method, o.payment_status, o.order_status,
-            o.city, o.state, timezone.localtime(o.created_at).strftime("%d-%m-%Y %H:%M")
+            o.city, o.state,
+            o.delhivery_waybill or '—',
+            'Yes' if o.whatsapp_sent else 'No',
+            timezone.localtime(o.created_at).strftime("%d-%m-%Y %H:%M"),
         ])
     return response
 
@@ -36,41 +44,160 @@ class OrderItemInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ['id', 'full_name', 'email', 'total_amount', 'payment_method', 'payment_status', 'order_status', 'created_at']
+    list_display = [
+        'id', 'full_name', 'email', 'total_amount',
+        'payment_method', 'payment_status', 'order_status',
+        'delhivery_waybill_display', 'whatsapp_sent', 'created_at',
+    ]
     list_editable = ['order_status', 'payment_status']
-    list_filter = ['payment_status', 'order_status', 'payment_method', 'created_at']
-    search_fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'razorpay_order_id']
-    readonly_fields = ['created_at', 'updated_at', 'razorpay_order_id', 'razorpay_payment_id']
+    list_filter = ['payment_status', 'order_status', 'payment_method', 'whatsapp_sent', 'created_at']
+    search_fields = [
+        'id', 'first_name', 'last_name', 'email', 'phone',
+        'razorpay_order_id', 'delhivery_waybill',
+    ]
+    readonly_fields = [
+        'created_at', 'updated_at',
+        'razorpay_order_id', 'razorpay_payment_id',
+        # ── New logistics fields (system-managed, read-only in admin)
+        'delhivery_waybill', 'whatsapp_sent',
+    ]
     actions = [export_to_csv]
     inlines = [OrderItemInline]
-    list_per_page = 25  # Admin pagination
+    list_per_page = 25
+
     fieldsets = (
-        ('Customer', {'fields': (('first_name', 'last_name'), 'email', 'phone')}),
-        ('Shipping', {'fields': ('shipping_address', 'apartment', 'landmark', 'city', 'state', 'zip_code', 'country')}),
-        ('Financials', {'fields': ('subtotal', 'discount_amount', 'shipping_fee', 'cod_fee', 'tax_amount', 'total_amount', 'coupon_code', 'exchange_code_used')}),
-        ('Payment & Status', {'fields': ('payment_method', 'payment_status','delivered_at', 'order_status', 'razorpay_order_id', 'razorpay_payment_id')}),
-        ('Policy', {'fields': ('accepted_return_policy',)}),
-        ('Tracking', {'fields': ('tracking_link', 'tracking_note')}),
-        ('Timestamps', {'fields': ('created_at', 'updated_at')}),
+        ('Customer', {
+            'fields': (('first_name', 'last_name'), 'email', 'phone'),
+        }),
+        ('Shipping', {
+            'fields': (
+                'shipping_address', 'apartment', 'landmark',
+                'city', 'state', 'zip_code', 'country',
+            ),
+        }),
+        ('Financials', {
+            'fields': (
+                'subtotal', 'discount_amount', 'shipping_fee',
+                'cod_fee', 'tax_amount', 'total_amount',
+                'coupon_code', 'exchange_code_used',
+            ),
+        }),
+        ('Payment & Status', {
+            'fields': (
+                'payment_method', 'payment_status', 'delivered_at',
+                'order_status', 'razorpay_order_id', 'razorpay_payment_id',
+            ),
+        }),
+        ('Policy', {
+            'fields': ('accepted_return_policy',),
+        }),
+        # ── Updated Tracking fieldset — includes waybill + notification status
+        ('Tracking & Logistics', {
+            'fields': (
+                'tracking_link', 'tracking_note',
+                'delhivery_waybill', 'whatsapp_sent',
+            ),
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+        }),
     )
 
+    # ── Custom list display helpers
     def full_name(self, obj):
         return f"{obj.first_name} {obj.last_name}"
     full_name.short_description = "Customer"
 
+    def delhivery_waybill_display(self, obj):
+        if obj.delhivery_waybill:
+            return format_html(
+                '<span style="color:#16a34a;font-weight:600;">{}</span>',
+                obj.delhivery_waybill,
+            )
+        return format_html('<span style="color:#9ca3af;">—</span>')
+    delhivery_waybill_display.short_description = "Waybill"
+
+    # ── save_model: COD trigger for Delhivery + WhatsApp
     def save_model(self, request, obj, form, change):
-    # If status changed to Delivered and delivered_at is empty, set it now
+        # ── Auto-set delivered_at timestamp (existing logic)
         if change and 'order_status' in form.changed_data and obj.order_status == 'Delivered':
             if not obj.delivered_at:
                 obj.delivered_at = timezone.now()
+
         super().save_model(request, obj, form, change)
 
+        # ── COD logistics trigger
+        # Fire when admin moves a COD order to 'Confirmed' or 'Shipped'
+        # (Online orders are handled in payments/views.py after Razorpay verification)
+        cod_trigger_statuses = ('Confirmed', 'Shipped')
+        status_changed = change and 'order_status' in form.changed_data
+        is_cod = obj.payment_method == 'COD'
 
-# admin.py
+        if status_changed and is_cod and obj.order_status in cod_trigger_statuses:
+            try:
+                # Import here to avoid circular imports at module load time
+                from .services import process_order_logistics_and_notification
+
+                process_order_logistics_and_notification(obj)
+
+                # ── Refresh from DB to read updated waybill/whatsapp_sent
+                obj.refresh_from_db()
+
+                # ── Show success banners in the Django admin UI
+                if obj.delhivery_waybill == "E-WAY_BILL_REQUIRED":
+                    # Clear out the text code field so the system doesn't save a fallback tracking key string
+                    obj.delhivery_waybill = ""
+                    obj.save(update_fields=['delhivery_waybill'])
+                    
+                    self.message_user(
+                        request,
+                        f"⚠️ Order total exceeds ₹50,000. Delhivery automated booking skipped. Please register an E-Way Bill manually before processing shipping labels.",
+                        level='WARNING',
+                    )
+                elif obj.delhivery_waybill:
+                    self.message_user(
+                        request,
+                        f"✅ Delhivery shipment created — Waybill: {obj.delhivery_waybill}",
+                        level='SUCCESS',
+                    )
+                else:
+                    self.message_user(
+                        request,
+                        "⚠️ Delhivery shipment could not be created. Check server logs.",
+                        level='WARNING',
+                    )
+
+                if obj.whatsapp_sent:
+                    self.message_user(
+                        request,
+                        f"✅ WhatsApp 'Order Placed' message sent to {obj.phone}",
+                        level='SUCCESS',
+                    )
+                else:
+                    self.message_user(
+                        request,
+                        "⚠️ WhatsApp message could not be sent. Check server logs.",
+                        level='WARNING',
+                    )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(
+                    f"[Admin] Logistics trigger failed for Order #{obj.id}: {exc}",
+                    exc_info=True,
+                )
+                self.message_user(
+                    request,
+                    f"❌ Logistics service error for Order #{obj.id}: {exc}. Check logs.",
+                    level='ERROR',
+                )
+
+
+# ── Return & Exchange admin (unchanged from original) ────────────────────────
+
 def approve_and_generate_code(modeladmin, request, queryset):
     for req in queryset.filter(status='Pending'):
         req.status = 'Approved'
-        req.save() # Let models.py handle the ExchangeCode creation
+        req.save()
 approve_and_generate_code.short_description = "Approve"
 
 
@@ -79,7 +206,6 @@ def reject_request(modeladmin, request, queryset):
         status='Rejected',
         admin_notes="Your return request has been reviewed and rejected. Contact support if you have questions."
     )
-
 reject_request.short_description = "Reject selected requests"
 
 

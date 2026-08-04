@@ -1,3 +1,4 @@
+#store/serializers
 from rest_framework import serializers
 from django.db.models import Avg
 from .models import (
@@ -13,7 +14,6 @@ class BrandSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    # Add this field to return the full absolute URL
     image = serializers.SerializerMethodField()
 
     class Meta:
@@ -25,8 +25,9 @@ class CategorySerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             if request:
                 return request.build_absolute_uri(obj.image.url)
-            return obj.image.url # Fallback
+            return obj.image.url
         return None
+
 
 class UsageTagSerializer(serializers.ModelSerializer):
     class Meta:
@@ -39,8 +40,6 @@ class ProductImageSerializer(serializers.ModelSerializer):
         model = ProductImage
         fields = ['id', 'image', 'is_primary', 'order']
 
-    
-
 
 class ProductVariantSerializer(serializers.ModelSerializer):
     final_price = serializers.SerializerMethodField()
@@ -49,7 +48,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductVariant
         fields = [
-            'id', 'ram', 'storage', 'stock',
+            'id', 'processor', 'ram', 'storage', 'stock',
             'price_override', 'final_price', 'final_original_price'
         ]
 
@@ -64,7 +63,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
 class ReviewSerializer(serializers.ModelSerializer):
     date = serializers.SerializerMethodField()
-    user_name = serializers.CharField(read_only=True) 
+    user_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = Review
@@ -76,8 +75,19 @@ class ReviewSerializer(serializers.ModelSerializer):
 
 
 class ProductListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for listing pages"""
+    """
+    Lightweight serializer for listing pages and home sections.
+
+    IMPORTANT: processor/ram/storage are intentionally excluded from this
+    serializer. All spec display on cards and filter pages must be derived
+    from variants[] exclusively. This enforces the variant-driven architecture
+    across the entire frontend.
+
+    The only place product-level specs are exposed is ProductDetailSerializer,
+    where they populate the specifications table on the product detail page.
+    """
     images = ProductImageSerializer(many=True, read_only=True)
+    variants = ProductVariantSerializer(many=True, read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True)
     brand_name = serializers.CharField(source='brand.name', read_only=True)
     usage_tags = UsageTagSerializer(many=True, read_only=True)
@@ -94,8 +104,10 @@ class ProductListSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'sku',
             'category_name', 'brand_name', 'condition', 'condition_display',
             'price', 'original_price', 'discount_percentage',
-            'processor', 'ram', 'storage', 'display',
-            'usage_tags', 'images',
+            # NOTE: 'processor', 'ram', 'storage' deliberately omitted here.
+            # Cards and filters read these values from variants[] instead.
+            'display',
+            'usage_tags', 'images', 'variants',
             'is_new_arrival', 'is_best_seller', 'is_trending', 'is_best_deal',
             'review_count', 'average_rating',
         ]
@@ -115,8 +127,13 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 
 class ProductDetailSerializer(ProductListSerializer):
-    """Full serializer for product detail page"""
-    variants = ProductVariantSerializer(many=True, read_only=True)
+    """
+    Full serializer for the product detail page.
+
+    Exposes product-level processor/ram/storage here ONLY for the
+    specifications table. All variant selection and pricing still
+    uses variants[].
+    """
     reviews = ReviewSerializer(many=True, read_only=True)
     highlights_list = serializers.SerializerMethodField()
     refurbishment_points_list = serializers.SerializerMethodField()
@@ -127,10 +144,11 @@ class ProductDetailSerializer(ProductListSerializer):
             'description', 'highlights_list',
             'refurbishment_summary', 'refurbishment_points_list',
             'warranty_summary', 'warranty_details_list',
+            # Spec fields for the specifications table on the detail page only
             'processor', 'ram', 'storage', 'display',
             'graphics', 'operating_system', 'battery',
             'weight', 'ports', 'wifi', 'bluetooth',
-            'variants', 'reviews','service_centers', 'warranty_period', 'return_policy'
+            'reviews', 'service_centers', 'warranty_period', 'return_policy'
         ]
 
     def get_highlights_list(self, obj):
@@ -152,27 +170,30 @@ class ProductDetailSerializer(ProductListSerializer):
 class SiteConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = SiteConfig
-        fields = '__all__' # Ensure new fields are included
+        fields = '__all__'
 
-# Add this new serializer at the bottom
+
 class ProductSearchSerializer(serializers.ModelSerializer):
-    """Optimized for search dropdown - lightweight + image"""
+    """
+    Optimized for search dropdown — lightweight + image only.
+    No spec fields needed here; search results link to the detail page.
+    """
     image = serializers.SerializerMethodField()
     category_name = serializers.CharField(source='category.name', read_only=True)
     brand_name = serializers.CharField(source='brand.name', read_only=True)
     discount_percentage = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Product
         fields = [
-            'id', 'title', 'slug', 'sku', 'price', 'original_price', 
+            'id', 'title', 'slug', 'sku', 'price', 'original_price',
             'image', 'category_name', 'brand_name', 'discount_percentage'
         ]
-    
+
     def get_image(self, obj):
         primary_image = obj.images.filter(is_primary=True).first()
         return primary_image.image.url if primary_image else None
-    
+
     def get_discount_percentage(self, obj):
         if obj.original_price and obj.original_price > obj.price:
             disc = ((obj.original_price - obj.price) / obj.original_price) * 100

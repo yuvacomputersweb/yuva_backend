@@ -1,3 +1,4 @@
+#order/models
 from django.db import models
 from django.conf import settings
 from store.models import Product, ProductVariant
@@ -72,7 +73,19 @@ class Order(models.Model):
     # Tracking
     tracking_link = models.URLField(max_length=500, blank=True, null=True)
     tracking_note = models.TextField(blank=True, null=True)
-
+ 
+    # Logistics & Notifications  ← NEW
+    delhivery_waybill = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Auto-filled waybill ID from Delhivery after shipment creation"
+    )
+    whatsapp_sent = models.BooleanField(
+        default=False,
+        help_text="True once the 'Order Placed' WhatsApp message has been sent"
+    )
+ 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

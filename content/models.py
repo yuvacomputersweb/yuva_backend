@@ -358,3 +358,44 @@ class ContactDepartment(models.Model):
 
     def __str__(self):
         return f"{self.label} — {self.number}"
+    
+# ── BLOG / MINI CMS ───────────────────────────────────────────────────────────
+
+class Blog(models.Model):
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True, blank=True, max_length=280)
+    cover_image = models.ImageField(upload_to='content/blogs/')
+    excerpt = models.TextField(
+        help_text="Short preview shown on cards. Auto-generated from paragraphs if left blank.",
+        blank=True
+    )
+    paragraphs = models.JSONField(
+        default=list,
+        help_text='Store as a JSON array of strings: ["Para 1...", "Para 2..."]'
+    )
+    is_published = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        # Auto-generate slug
+        if not self.slug:
+            from django.utils.text import slugify
+            base = slugify(self.title)
+            slug = base
+            n = 1
+            while Blog.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        # Auto-generate excerpt from first paragraph if not set
+        if not self.excerpt and self.paragraphs:
+            first = self.paragraphs[0] if isinstance(self.paragraphs, list) else ""
+            self.excerpt = first[:200] + ("..." if len(first) > 200 else "")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.title

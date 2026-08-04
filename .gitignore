@@ -15,7 +15,7 @@ staticfiles/
 media/
 
 # DB (IMPORTANT - we will allow sqlite below)
-# db.sqlite3   <-- REMOVE THIS LINE since you WANT to push DB
+db.sqlite3   <-- REMOVE THIS LINE since you WANT to push DB
 
 # env files
 .env

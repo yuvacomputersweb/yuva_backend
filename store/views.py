@@ -1,3 +1,4 @@
+#store/views
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import generics, status
@@ -14,7 +15,7 @@ from .models import (
 from .serializers import (
     BrandSerializer, CategorySerializer, UsageTagSerializer,
     ProductListSerializer, ProductDetailSerializer,
-    ReviewSerializer, SiteConfigSerializer,ProductSearchSerializer
+    ReviewSerializer, SiteConfigSerializer, ProductSearchSerializer
 )
 
 
@@ -50,7 +51,7 @@ class ProductListView(generics.ListAPIView):
             'images', 'variants', 'usage_tags'
         ).select_related('category', 'brand')
 
-        # Filters
+        # ── Existing filters ──────────────────────────────────────────────────
         category = self.request.query_params.get('category')
         brand = self.request.query_params.get('brand')
         usage = self.request.query_params.get('usage')
@@ -62,6 +63,12 @@ class ProductListView(generics.ListAPIView):
         min_price = self.request.query_params.get('min_price')
         max_price = self.request.query_params.get('max_price')
         search = self.request.query_params.get('search')
+
+        # ── NEW: variant-level filters ────────────────────────────────────────
+        # Supports comma-separated values for multi-select, e.g. processor=i5,i7
+        variant_processor = self.request.query_params.get('processor')
+        variant_ram = self.request.query_params.get('ram')
+        variant_storage = self.request.query_params.get('storage')
 
         if category:
             qs = qs.filter(category__slug=category)
@@ -91,7 +98,31 @@ class ProductListView(generics.ListAPIView):
                 Q(processor__icontains=search)
             ).distinct()
 
-        return qs.order_by('-created_at')
+        # Variant-level filtering — filter through related variants
+        # Supports multi-value via comma separation: ?processor=i5,i7
+        if variant_processor:
+            values = [v.strip() for v in variant_processor.split(',') if v.strip()]
+            q = Q()
+            for val in values:
+                q |= Q(variants__processor__icontains=val)
+            qs = qs.filter(q)
+
+        if variant_ram:
+            values = [v.strip() for v in variant_ram.split(',') if v.strip()]
+            q = Q()
+            for val in values:
+                q |= Q(variants__ram__icontains=val)
+            qs = qs.filter(q)
+
+        if variant_storage:
+            values = [v.strip() for v in variant_storage.split(',') if v.strip()]
+            q = Q()
+            for val in values:
+                q |= Q(variants__storage__icontains=val)
+            qs = qs.filter(q)
+
+        # Always use distinct() to prevent duplicate products from variant JOINs
+        return qs.distinct().order_by('-created_at')
 
 
 class ProductDetailView(generics.RetrieveAPIView):
@@ -108,8 +139,6 @@ class ProductDetailView(generics.RetrieveAPIView):
         return ctx
 
 
-# views.py
-
 class ReviewListCreateView(generics.ListCreateAPIView):
     serializer_class = ReviewSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -120,23 +149,19 @@ class ReviewListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         product = Product.objects.get(slug=self.kwargs['slug'])
-        # Capture the name from the logged-in user
         user = self.request.user
         user_name = "Anonymous"
-
         if user.is_authenticated:
             user_name = f"{user.first_name} {user.last_name}".strip() or user.username
-        
         variant_info = self.request.data.get('variant_info', 'Standard Variant')
-        serializer.save(product=product, user_name=user_name,variant_info=variant_info)
+        serializer.save(product=product, user_name=user_name, variant_info=variant_info)
 
-# views.py - HomeDataView
+
 class HomeDataView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
         ctx = {'request': request}
-        # Fetch latest 10 for each category
         return Response({
             'new_arrivals': ProductListSerializer(
                 Product.objects.filter(is_new_arrival=True, is_active=True)[:10],
@@ -155,12 +180,11 @@ class HomeDataView(APIView):
                 many=True, context=ctx
             ).data,
             'categories': CategorySerializer(
-                Category.objects.filter(is_featured=True), 
-                many=True, 
-                context=ctx # Pass the context here!
+                Category.objects.filter(is_featured=True),
+                many=True,
+                context=ctx
             ).data,
         })
-    
 
 
 class SiteConfigView(APIView):
@@ -186,7 +210,6 @@ class GlobalSearchView(APIView):
                 'message': 'Enter search term'
             })
 
-        # ✅ FIXED: Q objects FIRST, then is_active=True
         search_query = (
             Q(title__icontains=q) |
             Q(sku__icontains=q) |
@@ -199,8 +222,8 @@ class GlobalSearchView(APIView):
         )
 
         products = Product.objects.filter(
-            search_query,  # Q objects first
-            is_active=True  # keyword after
+            search_query,
+            is_active=True
         ).select_related('category', 'brand').prefetch_related('images')[:8]
 
         categories = Category.objects.filter(name__icontains=q)[:6]
@@ -213,7 +236,8 @@ class GlobalSearchView(APIView):
             'has_more': Product.objects.filter(is_active=True).count() > 8,
             'term': q
         })
-    
+
+
 class ValidateCouponView(APIView):
     permission_classes = [AllowAny]
 
@@ -265,11 +289,12 @@ class ValidateCouponView(APIView):
                 {'error': 'Invalid coupon code'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
 class CategoryBrandListView(generics.ListAPIView):
     serializer_class = BrandSerializer
     permission_classes = [AllowAny]
 
     def get_queryset(self):
         category_slug = self.kwargs.get('slug')
-        # Get unique brands that have products in this category
         return Brand.objects.filter(products__category__slug=category_slug).distinct()

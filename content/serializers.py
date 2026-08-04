@@ -5,7 +5,7 @@ from .models import (
     CompanyCertification, CompanyPartner,
     BulkOrderContent, BulkOrderBenefit, BulkScalePoint, BulkInventoryItem,
     StoreLocation, StoresPageContent,
-    ContactPageContent, ContactDepartment,
+    ContactPageContent, ContactDepartment,Blog
 )
 
 
@@ -115,3 +115,15 @@ class ContactPageContentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactPageContent
         fields = '__all__'
+
+from .models import Blog  # add to existing import
+
+class BlogListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Blog
+        fields = ['id', 'title', 'slug', 'cover_image', 'excerpt', 'created_at']
+
+class BlogDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Blog
+        fields = ['id', 'title', 'slug', 'cover_image', 'excerpt', 'paragraphs', 'created_at', 'updated_at']

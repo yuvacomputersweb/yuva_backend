@@ -7,7 +7,7 @@ from .models import (
     CompanyCertification, CompanyPartner,
     BulkOrderContent, BulkOrderBenefit, BulkScalePoint, BulkInventoryItem,
     StoreLocation, StoresPageContent,
-    ContactPageContent, ContactDepartment,
+    ContactPageContent, ContactDepartment,Blog
 )
 from .serializers import (
     HeroSlideSerializer, SiteStatSerializer, HomeReviewSerializer,
@@ -17,8 +17,10 @@ from .serializers import (
     BulkOrderContentSerializer, BulkOrderBenefitSerializer,
     BulkScalePointSerializer, BulkInventoryItemSerializer,
     StoreLocationSerializer, StoresPageContentSerializer,
-    ContactPageContentSerializer, ContactDepartmentSerializer,
+    ContactPageContentSerializer, ContactDepartmentSerializer,BlogListSerializer,BlogDetailSerializer,
 )
+from rest_framework import generics
+from django.shortcuts import get_object_or_404
 
 
 def _first(model):
@@ -104,3 +106,30 @@ class ContactPageContentView(APIView):
             'content': ContactPageContentSerializer(content).data if content else None,
             'departments': ContactDepartmentSerializer(departments, many=True).data,
         })
+
+class BlogListView(generics.ListAPIView):
+    serializer_class = BlogListSerializer
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        qs = Blog.objects.filter(is_published=True)
+        limit = self.request.query_params.get('limit')
+        if limit:
+            try:
+                qs = qs[:int(limit)]
+            except ValueError:
+                pass
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        serializer = BlogListSerializer(qs, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
+class BlogDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        blog = get_object_or_404(Blog, slug=slug, is_published=True)
+        return Response(BlogDetailSerializer(blog, context={'request': request}).data)

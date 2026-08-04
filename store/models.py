@@ -1,13 +1,12 @@
-#yuva computers
+#store/models
 from django.db import models
 from django.utils.text import slugify
 from django.utils import timezone
 
 
 class Brand(models.Model):
-    name = models.CharField(max_length=100)  # Dell, HP, Lenovo, Apple, Asus, Acer
+    name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True, blank=True)
-    
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -19,7 +18,7 @@ class Brand(models.Model):
 
 
 class Category(models.Model):
-    name = models.CharField(max_length=100)   # Laptop, Desktop, Mini PC, Monitor
+    name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True, blank=True)
     image = models.ImageField(upload_to='categories/', null=True, blank=True)
     is_featured = models.BooleanField(default=False)
@@ -81,7 +80,7 @@ class Product(models.Model):
         help_text="MRP / original price for showing discount"
     )
 
-    # Specs (the core fields for computers)
+    # Specs
     processor = models.CharField(max_length=255, blank=True)
     ram = models.CharField(max_length=50, blank=True, help_text="e.g. 8GB DDR4")
     storage = models.CharField(max_length=100, blank=True, help_text="e.g. 256GB SSD")
@@ -139,8 +138,13 @@ class Product(models.Model):
 
 
 class ProductVariant(models.Model):
-    """RAM + Storage combinations with stock and optional price override"""
+    """Processor + RAM + Storage combinations with stock and optional price override"""
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
+    # ADDED: processor field — blank/default so existing rows without processor still work
+    processor = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="e.g. Intel Core i5-10th Gen. Leave blank if not applicable."
+    )
     ram = models.CharField(max_length=50, help_text="e.g. 8GB")
     storage = models.CharField(max_length=100, help_text="e.g. 256GB SSD")
     stock = models.PositiveIntegerField(default=0)
@@ -150,10 +154,15 @@ class ProductVariant(models.Model):
     )
 
     def __str__(self):
-        return f"{self.product.sku} | {self.ram} / {self.storage}"
+        parts = [self.product.sku]
+        if self.processor:
+            parts.append(self.processor)
+        parts.extend([self.ram, self.storage])
+        return " | ".join(parts)
 
     class Meta:
-        unique_together = ('product', 'ram', 'storage')
+        # UPDATED: processor is now part of the unique combination
+        unique_together = ('product', 'processor', 'ram', 'storage')
 
 
 class ProductImage(models.Model):
@@ -179,7 +188,7 @@ class Review(models.Model):
     is_featured = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     variant_info = models.CharField(max_length=100, blank=True)
-    
+
     def __str__(self):
         return f"{self.user_name} — {self.product.title} ({self.rating}★)"
 

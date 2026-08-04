@@ -10,13 +10,7 @@ load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = [
-    'api.yuvacomputers.in',
-    'admin.yuvacomputers.in',
-    'yuvacomputers.in', # Add this
-    'www.yuvacomputers.in', # Add this
-    '103.138.96.2'
-]
+ALLOWED_HOSTS = ['*']
 SIMPLE_JWT = {
     'LEEWAY': 60, 
 }
@@ -88,11 +82,10 @@ WSGI_APPLICATION = 'core.wsgi.application'
 
 
 DATABASES = {
-      'default': dj_database_url.config(
-           default=os.environ.get('DATABASE_URL'),
-           conn_max_age=600,
-           ssl_require=False 
-    )
+     'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
 }
 	
 AUTH_USER_MODEL = 'accounts.CustomUser'
@@ -154,22 +147,23 @@ SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 
 # --- CORS ---
 CORS_ALLOWED_ORIGINS = [
-    "https://yuvacomputers.in",
-    "https://www.yuvacomputers.in",
-    "https://api.yuvacomputers.in",
-    "https://admin.yuvacomputers.in",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
 ]
 
 
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://yuvacomputers.in",
-    "https://www.yuvacomputers.in",
-    "https://api.yuvacomputers.in",
-    "https://admin.yuvacomputers.in",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
 ]
+
 SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin-allow-popups"
 
 # --- STATIC & MEDIA ---
@@ -229,3 +223,47 @@ if not DEBUG:
     # Proxy Headers for Nginx
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     USE_X_FORWARDED_HOST = True
+DELHIVERY_API_TOKEN = os.environ.get('DELHIVERY_API_TOKEN', '')
+DELHIVERY_API_URL   = os.environ.get('DELHIVERY_API_URL', 'https://track.delhivery.com')
+
+# Go to the bottom of settings.py where your WA keys are, and add WA_API_URL:
+WA_PHONE_NUMBER_ID = os.environ.get('WA_PHONE_NUMBER_ID', '')
+WA_ACCESS_TOKEN    = os.environ.get('WA_ACCESS_TOKEN', '')
+WA_TEMPLATE_NAME   = os.environ.get('WA_TEMPLATE_NAME', 'order_placed')
+WA_API_URL         = os.environ.get('WA_API_URL', 'https://live-mt-server.wati.io/308273') # ◄ Add this line
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{levelname}] {asctime} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'orders.services': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'payments': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'orders.admin': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+DELHIVERY_PICKUP_LOCATION = os.environ.get('DELHIVERY_PICKUP_LOCATION', '')

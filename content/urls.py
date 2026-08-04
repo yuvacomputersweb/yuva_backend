@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     HomePageContentView, CompanyPageContentView,
     BulkOrderPageContentView, StoresPageContentView,
-    ContactPageContentView,
+    ContactPageContentView,BlogListView, BlogDetailView,
 )
 
 urlpatterns = [
@@ -11,4 +11,6 @@ urlpatterns = [
     path('bulk-orders/', BulkOrderPageContentView.as_view(), name='bulk-content'),
     path('stores/', StoresPageContentView.as_view(), name='stores-content'),
     path('contact/', ContactPageContentView.as_view(), name='contact-content'),
+    path('blogs/', BlogListView.as_view(), name='blog-list'),
+    path('blogs/<slug:slug>/', BlogDetailView.as_view(), name='blog-detail'),
 ]

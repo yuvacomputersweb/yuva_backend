@@ -1,3 +1,4 @@
+#store/admin
 from django.contrib import admin
 from django.utils.html import format_html
 from .models import (
@@ -44,7 +45,22 @@ class ProductImageInline(admin.TabularInline):
 class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
     extra = 1
-    fields = ['ram', 'storage', 'stock', 'price_override']
+    # UPDATED: added processor field
+    fields = ['processor', 'ram', 'storage', 'stock', 'price_override']
+
+
+@admin.register(ProductVariant)
+class ProductVariantAdmin(admin.ModelAdmin):
+    """Standalone admin for bulk variant management"""
+    list_display = ('product', 'processor', 'ram', 'storage', 'stock', 'price_override', 'final_price')
+    list_filter = ('product', 'processor', 'ram', 'storage')
+    search_fields = ('product__sku', 'product__title', 'processor', 'ram', 'storage')
+    list_editable = ('stock', 'price_override')
+    ordering = ('product', 'processor', 'ram', 'storage')
+
+    def final_price(self, obj):
+        return f"₹{obj.product.price + obj.price_override:,.2f}"
+    final_price.short_description = "Final Price"
 
 
 @admin.register(Product)
@@ -95,12 +111,10 @@ class ProductAdmin(admin.ModelAdmin):
                 'is_new_arrival', 'is_best_seller',
                 'is_trending', 'is_best_deal'
             )
-        
         }),
-        ('Trust Badges (Per Product)', { # ADDED THIS SECTION
+        ('Trust Badges (Per Product)', {
             'fields': ('service_centers', 'warranty_period', 'return_policy')
         }),
-        
     )
 
 

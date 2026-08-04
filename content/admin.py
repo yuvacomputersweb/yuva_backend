@@ -6,7 +6,7 @@ from .models import (
     CompanyCertification, CompanyPartner,
     BulkOrderContent, BulkOrderBenefit, BulkScalePoint, BulkInventoryItem,
     StoreLocation, StoresPageContent,
-    ContactPageContent, ContactDepartment,
+    ContactPageContent, ContactDepartment,Blog
 )
 
 
@@ -140,3 +140,42 @@ class ContactPageContentAdmin(admin.ModelAdmin):
 class ContactDepartmentAdmin(admin.ModelAdmin):
     list_display = ['label', 'number', 'icon', 'order', 'is_active']
     list_editable = ['order', 'is_active']
+
+@admin.register(Blog)
+class BlogAdmin(admin.ModelAdmin):
+    list_display = ['title', 'slug', 'is_published', 'created_at', 'cover_preview']
+    list_editable = ['is_published']
+    list_display_links = ['title']
+    prepopulated_fields = {'slug': ('title',)}
+    readonly_fields = ['created_at', 'updated_at', 'cover_preview']
+    search_fields = ['title', 'slug']
+    list_filter = ['is_published']
+
+    fieldsets = (
+        (None, {
+            'fields': ('title', 'slug', 'is_published')
+        }),
+        ('Cover Image', {
+            'fields': ('cover_image', 'cover_preview')
+        }),
+        ('Content', {
+            'fields': ('excerpt', 'paragraphs'),
+            'description': (
+                'paragraphs: Enter a JSON list of strings. Example: '
+                '["First paragraph text.", "Second paragraph text."]'
+            )
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def cover_preview(self, obj):
+        if obj.cover_image:
+            return format_html(
+                '<img src="{}" style="height:80px;border-radius:6px;" />',
+                obj.cover_image.url
+            )
+        return "—"
+    cover_preview.short_description = "Preview"
