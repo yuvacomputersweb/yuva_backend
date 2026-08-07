@@ -1,4 +1,4 @@
-#store/models
+#store/models-yuva
 from django.db import models
 from django.utils.text import slugify
 from django.utils import timezone

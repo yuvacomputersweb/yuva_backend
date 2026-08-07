@@ -4,10 +4,14 @@ Logistics & Notification Service Layer
 Yuva Computers — Delhivery One + WATI WhatsApp Gateway
 
 Trigger rules:
-  - Online (Razorpay): called from payments/views.py after payment_status → 'Paid'
-  - COD: called from orders/admin.py when admin sets status → 'Confirmed' or 'Shipped'
+  - Online orders:  payments/views.py  → after payment_status = 'Paid'
+  - COD orders:     payments/views.py  → after payment_status = 'Deposit Paid'
+                    orders/admin.py    → when admin sets status to 'Confirmed' or 'Shipped'
 
-Safety: all external calls are wrapped so they NEVER block the core order flow.
+Delhivery COD amount:
+  - For COD orders, cod_amount sent to Delhivery = collectible_cod_amount
+    (i.e. the 98% the delivery agent collects — NOT the full total_amount)
+  - This is correct because the customer already paid 2% online.
 """
 
 import json
@@ -22,35 +26,18 @@ logger = logging.getLogger(__name__)
 
 def _format_e164(phone: str) -> str:
     """
-    Convert an Indian phone number to E.164 format WITHOUT the + sign.
-    WATI requires: 91XXXXXXXXXX  (no + prefix, no spaces)
-
-    Handles all common Indian formats:
-      9876543210        → 919876543210
-      09876543210       → 919876543210
-      +919876543210     → 919876543210
-      919876543210      → 919876543210  (already correct)
+    Convert to WATI-compatible format: 91XXXXXXXXXX (no + sign, no spaces).
     """
     phone = phone.strip().replace(" ", "").replace("-", "")
-
-    # Strip leading + if present
     if phone.startswith("+"):
         phone = phone[1:]
-
-    # Already has 91 prefix and correct length
     if phone.startswith("91") and len(phone) == 12:
         return phone
-
-    # Has leading 0 (STD format)
     if phone.startswith("0") and len(phone) == 11:
         return f"91{phone[1:]}"
-
-    # Plain 10-digit number
     if len(phone) == 10:
         return f"91{phone}"
-
-    # Unknown format — prefix 91 and hope for the best, log it
-    logger.warning(f"[PhoneFormat] Unexpected phone format: '{phone}' — prefixing 91")
+    logger.warning(f"[PhoneFormat] Unexpected format: '{phone}' — prefixing 91")
     return f"91{phone}"
 
 
@@ -58,40 +45,36 @@ def _format_e164(phone: str) -> str:
 
 def process_order_logistics_and_notification(order) -> None:
     """
-    Central runner. Call this after an order is confirmed/paid.
-    Idempotent: safe to call multiple times — checks flags before firing.
-
-    Args:
-        order: orders.models.Order instance (already saved to DB)
+    Central runner. Idempotent — safe to call multiple times.
+    Checks delhivery_waybill and whatsapp_sent flags before firing.
     """
-    logger.info(f"[Logistics] Starting for Order #{order.id} | method={order.payment_method}")
+    logger.info(f"[Logistics] Order #{order.id} | method={order.payment_method} | status={order.payment_status}")
 
-    # ── Step 1: Delhivery shipment creation
+    # ── Delhivery shipment creation
     if not order.delhivery_waybill:
         try:
             waybill = create_delhivery_order(order)
             if waybill:
                 order.delhivery_waybill = waybill
                 order.save(update_fields=["delhivery_waybill"])
-                logger.info(f"[Delhivery] Order #{order.id} → waybill saved: {waybill}")
+                logger.info(f"[Delhivery] Order #{order.id} → waybill: {waybill}")
             else:
-                logger.warning(f"[Delhivery] Order #{order.id} → no waybill returned (check API response logs above)")
+                logger.warning(f"[Delhivery] Order #{order.id} → no waybill returned")
         except Exception as exc:
-            # Log full traceback but do NOT re-raise — never block checkout
             logger.error(f"[Delhivery] Order #{order.id} failed: {exc}", exc_info=True)
     else:
         logger.info(f"[Delhivery] Order #{order.id} already has waybill '{order.delhivery_waybill}' — skipping")
 
-    # ── Step 2: WhatsApp "Order Placed" notification
+    # ── WhatsApp notification
     if not order.whatsapp_sent:
         try:
             sent = send_whatsapp_order_placed_msg(order)
             if sent:
                 order.whatsapp_sent = True
                 order.save(update_fields=["whatsapp_sent"])
-                logger.info(f"[WhatsApp] Order #{order.id} → message sent successfully")
+                logger.info(f"[WhatsApp] Order #{order.id} → message sent")
             else:
-                logger.warning(f"[WhatsApp] Order #{order.id} → message NOT sent (see error logs above)")
+                logger.warning(f"[WhatsApp] Order #{order.id} → message NOT sent")
         except Exception as exc:
             logger.error(f"[WhatsApp] Order #{order.id} failed: {exc}", exc_info=True)
     else:
@@ -102,29 +85,38 @@ def process_order_logistics_and_notification(order) -> None:
 
 def create_delhivery_order(order) -> str | None:
     """
-    Create a shipment on Delhivery One via the CMU creation endpoint.
+    Create a Delhivery shipment via the CMU endpoint.
 
-    - Works for ALL order amounts including above ₹50,000.
-      The client will manually add E-Way bill on Delhivery dashboard after creation.
-    - Returns the per-shipment waybill string on success.
-    - Never falls back to upload_wbn (batch ID) — that's not a trackable waybill.
-    - Returns None on any failure so the orchestrator logs it cleanly.
+    COD amount logic:
+      - COD orders: send collectible_cod_amount (98% — what delivery agent collects)
+        NOT total_amount (customer already paid 2% advance online)
+      - Online orders: cod_amount = 0 (fully prepaid)
+
+    For orders above ₹50,000: Delhivery will reject unless an E-Way bill is
+    added manually in the Delhivery One dashboard after creation.
     """
     api_token  = getattr(settings, "DELHIVERY_API_TOKEN", "")
     api_url    = getattr(settings, "DELHIVERY_API_URL", "https://track.delhivery.com")
     pickup_loc = getattr(settings, "DELHIVERY_PICKUP_LOCATION", "")
 
     if not api_token:
-        logger.error("[Delhivery] DELHIVERY_API_TOKEN is not configured in settings/.env")
+        logger.error("[Delhivery] DELHIVERY_API_TOKEN not configured")
         return None
     if not pickup_loc:
-        logger.error("[Delhivery] DELHIVERY_PICKUP_LOCATION is not configured in settings/.env")
+        logger.error("[Delhivery] DELHIVERY_PICKUP_LOCATION not configured")
         return None
 
     total_qty    = sum(item.quantity for item in order.items.all())
     is_cod       = order.payment_method == "COD"
     payment_mode = "COD" if is_cod else "Pre-paid"
-    cod_amount   = float(order.total_amount) if is_cod else 0
+
+    # ── KEY FIX: use collectible_cod_amount for COD, not total_amount ─────────
+    # collectible_cod_amount = total_amount - advance_amount (98%)
+    # The delivery agent only collects the balance, not the full order value.
+    if is_cod:
+        cod_amount = float(order.collectible_cod_amount)
+    else:
+        cod_amount = 0
 
     shipment_data = {
         "shipments": [
@@ -138,141 +130,129 @@ def create_delhivery_order(order) -> str | None:
                 "phone":           order.phone,
                 "order":           str(order.id),
                 "payment_mode":    payment_mode,
-                "cod_amount":      cod_amount,
-                "total_amount":    float(order.total_amount),
+                "cod_amount":      cod_amount,           # ← 98% balance (correct)
+                "total_amount":    float(order.total_amount),  # ← full product value
                 "shipment_width":  10,
                 "shipment_height": 10,
                 "shipment_length": 15,
-                "weight":          500 * total_qty,    # 500g per item — update per client
+                "weight":          500 * total_qty,      # 500g/item — update per client
                 "quantity":        total_qty,
                 "seller_name":     "Yuva Computers",
                 "seller_add":      "Hyderabad, Telangana",
                 "seller_inv":      str(order.id),
                 "return_pin":      "500001",
                 "return_city":     "Hyderabad",
-                "return_phone":    "9100000000",        # update to store phone
+                "return_phone":    "9100000000",
                 "return_name":     "Yuva Computers",
                 "return_add":      "Yuva Computers, Hyderabad",
                 "return_state":    "Telangana",
                 "return_country":  "India",
             }
         ],
-        "pickup_location": {
-            "name": pickup_loc,
-        },
+        "pickup_location": {"name": pickup_loc},
     }
 
     endpoint  = f"{api_url.rstrip('/')}/api/cmu/create.json"
     headers   = {"Authorization": f"Token {api_token}"}
     form_data = {"format": "json", "data": json.dumps(shipment_data)}
 
-    logger.info(f"[Delhivery] POST {endpoint} | Order #{order.id} | ₹{order.total_amount} | {payment_mode}")
+    logger.info(
+        f"[Delhivery] POST {endpoint} | Order #{order.id} | "
+        f"₹{order.total_amount} total | COD collectible: ₹{cod_amount} | {payment_mode}"
+    )
 
     response = requests.post(endpoint, data=form_data, headers=headers, timeout=15)
-
-    logger.info(f"[Delhivery] Response HTTP {response.status_code}: {response.text[:800]}")
+    logger.info(f"[Delhivery] HTTP {response.status_code}: {response.text[:800]}")
 
     if response.status_code not in (200, 201):
-        logger.error(f"[Delhivery] Order #{order.id} HTTP error {response.status_code}: {response.text[:500]}")
+        logger.error(f"[Delhivery] HTTP error {response.status_code}: {response.text[:500]}")
         return None
 
     try:
         result = response.json()
     except Exception:
-        logger.error(f"[Delhivery] Order #{order.id} — response is not valid JSON: {response.text[:300]}")
+        logger.error(f"[Delhivery] Non-JSON response: {response.text[:300]}")
         return None
 
-    # ── Extract waybill from individual shipment package only ──────────────
-    # NEVER use result.get("upload_wbn") — that is a batch-level upload ID,
-    # not a trackable shipment waybill. Using it would store corrupted tracking data.
     packages = result.get("packages", [])
     if packages:
-        first = packages[0]
-        waybill = first.get("waybill", "")
+        first      = packages[0]
+        waybill    = first.get("waybill", "")
         pkg_status = first.get("status", "")
 
         if waybill and pkg_status == "Success":
             return waybill
 
-        # Shipment was received but individual package failed validation
         logger.error(
-            f"[Delhivery] Order #{order.id} package not successful. "
-            f"status='{pkg_status}' | waybill='{waybill}' | "
-            f"error='{first.get('error', 'none')}' | "
-            f"remarks='{first.get('remarks', 'none')}'"
+            f"[Delhivery] Package failed | status='{pkg_status}' | "
+            f"waybill='{waybill}' | remarks='{first.get('remarks', [])}'"
         )
         return None
 
-    # No packages array at all — log full response for debugging
-    logger.error(
-        f"[Delhivery] Order #{order.id} — no 'packages' key in response. "
-        f"Full response: {result}"
-    )
+    logger.error(f"[Delhivery] No packages in response: {result}")
     return None
 
 
-# ─── WHATSAPP (WATI GATEWAY) ─────────────────────────────────────────────────
+# ─── WHATSAPP (WATI) ─────────────────────────────────────────────────────────
+
 def send_whatsapp_order_placed_msg(order) -> bool:
     """
-    Send a transactional "Order Placed" message via the WATI multi-tenant gateway.
-    Strictly mapped to the verified template tokens from the WATI dashboard.
+    Send 'Order Placed' via WATI.
+    whatsappNumber goes in the query string, not the JSON body.
     """
     access_token  = getattr(settings, "WA_ACCESS_TOKEN", "")
     template_name = getattr(settings, "WA_TEMPLATE_NAME", "order_placed")
     base_api_url  = getattr(settings, "WA_API_URL", "https://live-mt-server.wati.io/308273")
 
     if not access_token:
-        logger.error("[WhatsApp] WA_ACCESS_TOKEN is not configured in settings/.env")
+        logger.error("[WhatsApp] WA_ACCESS_TOKEN not configured")
         return False
-
     if not order.phone:
-        logger.error(f"[WhatsApp] Order #{order.id} has no phone number — cannot send message")
+        logger.error(f"[WhatsApp] Order #{order.id} has no phone number")
         return False
 
     recipient_phone = _format_e164(order.phone)
-    first_name   = (order.first_name or "Customer").strip()
-    order_id     = str(order.id)
-    total_amount = f"Rs. {float(order.total_amount):,.2f}"
+    first_name      = (order.first_name or "Customer").strip()
+    order_id        = str(order.id)
+    total_amount    = f"Rs. {float(order.total_amount):,.2f}"
 
-    url = f"{base_api_url.rstrip('/')}/api/v1/sendTemplateMessage"
-    params = {"whatsappNumber": recipient_phone}
-
+    url     = f"{base_api_url.rstrip('/')}/api/v1/sendTemplateMessage"
+    params  = {"whatsappNumber": recipient_phone}
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type":  "application/json",
         "Accept":        "application/json",
     }
-
-    # ─── THE DEFINITIVE ACCURATE PAYLOAD ───
-    # Using the exact keys found in image_3646c0.png and image_364983.png
     payload = {
-        "template_name": template_name,
+        "template_name":  template_name,
         "broadcast_name": f"Order_{order_id}",
-        "channel_number": "919709888456",  # ◄ Real business number from dashboard header
         "parameters": [
-            {"name": "name", "value": first_name},
+            {"name": "name",         "value": first_name},
             {"name": "order_number", "value": order_id},
-            {"name": "total_price", "value": total_amount}
+            {"name": "total_price",  "value": total_amount},
         ],
     }
 
-    logger.info(f"[WhatsApp] Routing verified token schema payload to WATI for Order #{order_id}")
+    logger.info(f"[WhatsApp] → {recipient_phone} | Order #{order_id}")
 
     try:
         response = requests.post(url, params=params, json=payload, headers=headers, timeout=25)
-        logger.info(f"[WhatsApp] Response Status: {response.status_code} | Text: {response.text}")
+        logger.info(f"[WhatsApp] HTTP {response.status_code}: {response.text}")
 
         if response.status_code not in (200, 201):
-            logger.error(f"[WhatsApp] Order #{order.id} failed with status {response.status_code}")
+            logger.error(f"[WhatsApp] Failed HTTP {response.status_code}: {response.text[:500]}")
             return False
 
         result = response.json()
         if result.get("result") is True or result.get("result") == "success":
             return True
 
-        logger.error(f"[WhatsApp] WATI verification rejected processing: {result}")
+        logger.error(f"[WhatsApp] Unexpected response: {result}")
         return False
 
+    except requests.exceptions.Timeout:
+        logger.error(f"[WhatsApp] Order #{order.id} — request timed out")
+        return False
     except Exception as exc:
-        logger.error(f"[WhatsApp] Order #{order.id} unexpected exception: {exc}", exc_info=True)
+        logger.error(f"[WhatsApp] Order #{order.id} — exception: {exc}", exc_info=True)
         return False

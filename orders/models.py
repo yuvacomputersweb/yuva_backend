@@ -1,4 +1,5 @@
-#order/models
+# orders/models.py
+from decimal import Decimal
 from django.db import models
 from django.conf import settings
 from store.models import Product, ProductVariant
@@ -8,14 +9,16 @@ from django.dispatch import receiver
 from datetime import timedelta
 from django.db.models.signals import post_save
 
+
 class Order(models.Model):
     PAYMENT_STATUS = [
-    ('Pending', 'Pending'),
-    ('Paid', 'Paid'),
-    ('Failed', 'Failed'),
-    ('Refunded', 'Refunded'),
-    ('Refund Pending', 'Refund Pending'),
-]
+        ('Pending', 'Pending'),
+        ('Deposit Paid', 'Deposit Paid'),   # ← NEW: 2% advance paid for COD
+        ('Paid', 'Paid'),
+        ('Failed', 'Failed'),
+        ('Refunded', 'Refunded'),
+        ('Refund Pending', 'Refund Pending'),
+    ]
     ORDER_STATUS = [
         ('Pending', 'Pending'),
         ('Processing', 'Processing'),
@@ -38,6 +41,7 @@ class Order(models.Model):
     email = models.EmailField(blank=True)
     exchange_code_used = models.CharField(max_length=20, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+
     # Shipping
     shipping_address = models.TextField()
     apartment = models.CharField(max_length=255, blank=True)
@@ -51,10 +55,31 @@ class Order(models.Model):
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     shipping_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    cod_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     coupon_code = models.CharField(max_length=50, blank=True)
+
+    # ── Partial COD payment fields ────────────────────────────────────────────
+    # advance_amount       = 2% of total_amount, paid online via Razorpay at checkout
+    # collectible_cod_amount = remaining 98%, collected by delivery agent on delivery
+    # is_partial_cod       = True only for COD orders (flag for easy filtering)
+    # cod_fee              = kept for backwards compatibility, always 0 now (surcharge removed)
+    cod_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Legacy field — kept for DB compatibility. Always 0 now."
+    )
+    advance_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text="2% of total_amount paid online via Razorpay at checkout (COD orders only)"
+    )
+    collectible_cod_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text="Amount collected on delivery = total_amount - advance_amount (COD orders only)"
+    )
+    is_partial_cod = models.BooleanField(
+        default=False,
+        help_text="True for COD orders that require 2% upfront deposit"
+    )
 
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD, default='Online')
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS, default='Pending')
@@ -73,19 +98,17 @@ class Order(models.Model):
     # Tracking
     tracking_link = models.URLField(max_length=500, blank=True, null=True)
     tracking_note = models.TextField(blank=True, null=True)
- 
-    # Logistics & Notifications  ← NEW
+
+    # Logistics & Notifications
     delhivery_waybill = models.CharField(
-        max_length=100,
-        blank=True,
-        null=True,
+        max_length=100, blank=True, null=True,
         help_text="Auto-filled waybill ID from Delhivery after shipment creation"
     )
     whatsapp_sent = models.BooleanField(
         default=False,
         help_text="True once the 'Order Placed' WhatsApp message has been sent"
     )
- 
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -119,10 +142,6 @@ class OrderItem(models.Model):
 
 
 class ExchangeCode(models.Model):
-    """
-    Admin generates this after approving a return request.
-    Customer uses this code to get a replacement or upgrade.
-    """
     code = models.CharField(
         max_length=20, unique=True,
         help_text="Unique code given to customer for exchange/upgrade"
@@ -132,10 +151,7 @@ class ExchangeCode(models.Model):
     is_used = models.BooleanField(default=False)
     used_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(
-        blank=True,
-        help_text="Admin notes — e.g. approved for defective display"
-    )
+    notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
@@ -161,20 +177,10 @@ class ReturnRequest(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='return_requests')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     request_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='Exchange')
-    defect_description = models.TextField(
-        help_text="Customer describes the product defect"
-    )
-    defect_video_url = models.URLField(
-    max_length=1000,   # 🔥 FIX
-    blank=True,
-    null=True,
-    help_text="Link to video showing the defect (YouTube, Drive, etc.)"
-)
+    defect_description = models.TextField()
+    defect_video_url = models.URLField(max_length=1000, blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
-    admin_notes = models.TextField(
-        blank=True,
-        help_text="Admin response — visible to customer"
-    )
+    admin_notes = models.TextField(blank=True)
     exchange_code = models.OneToOneField(
         ExchangeCode, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='return_request'
@@ -188,15 +194,13 @@ class ReturnRequest(models.Model):
     def __str__(self):
         return f"Return #{self.id} — Order #{self.order.id} [{self.status}]"
 
-    # Add this inside ReturnRequest model in models.py
+
 from datetime import timedelta
 
-# models.py - Update the ReturnRequest.save method
+
 @receiver(post_save, sender=ReturnRequest)
 def create_exchange_code_on_approval(sender, instance, created, **kwargs):
-    # Only proceed if the status is Approved and we haven't created a code yet
     if instance.status == 'Approved' and not instance.exchange_code:
-        # Check if an exchange code for this specific order/return already exists
         if not ExchangeCode.objects.filter(order=instance.order).exists():
             code = ExchangeCode.objects.create(
                 order=instance.order,
@@ -204,7 +208,5 @@ def create_exchange_code_on_approval(sender, instance, created, **kwargs):
                 expires_at=timezone.now() + timedelta(days=30),
                 notes=f"Auto-generated for return #{instance.id}"
             )
-            
-            # Update the instance witdef hout triggering another save() signal
             instance.exchange_code = code
             instance.save(update_fields=['exchange_code'])

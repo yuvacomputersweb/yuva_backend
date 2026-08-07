@@ -12,14 +12,18 @@ def export_to_csv(modeladmin, request, queryset):
     response['Content-Disposition'] = 'attachment; filename=orders.csv'
     writer = csv.writer(response)
     writer.writerow([
-        'Order ID', 'Name', 'Email', 'Phone', 'Total',
+        'Order ID', 'Name', 'Email', 'Phone',
+        'Product Total', 'COD Charge Paid Online', 'Due on Delivery',
         'Payment Method', 'Payment Status', 'Order Status',
-        'City', 'State', 'Delhivery Waybill', 'WhatsApp Sent', 'Date'
+        'City', 'State', 'Delhivery Waybill', 'WhatsApp Sent', 'Date',
     ])
     for o in queryset:
         writer.writerow([
             o.id, f"{o.first_name} {o.last_name}", o.email, o.phone,
-            o.total_amount, o.payment_method, o.payment_status, o.order_status,
+            o.total_amount,
+            o.advance_amount if o.is_partial_cod else '—',
+            o.collectible_cod_amount if o.is_partial_cod else '—',
+            o.payment_method, o.payment_status, o.order_status,
             o.city, o.state,
             o.delhivery_waybill or '—',
             'Yes' if o.whatsapp_sent else 'No',
@@ -31,8 +35,8 @@ export_to_csv.short_description = "Export selected to CSV"
 
 
 class OrderItemInline(admin.TabularInline):
-    model = OrderItem
-    extra = 0
+    model         = OrderItem
+    extra         = 0
     readonly_fields = ['product_name', 'variant_label', 'price', 'quantity', 'image_preview']
 
     def image_preview(self, obj):
@@ -47,42 +51,56 @@ class OrderAdmin(admin.ModelAdmin):
     list_display = [
         'id', 'full_name', 'email', 'total_amount',
         'payment_method', 'payment_status', 'order_status',
+        'cod_charge_display', 'cod_due_display',
         'delhivery_waybill_display', 'whatsapp_sent', 'created_at',
     ]
-    list_editable = ['order_status', 'payment_status']
-    list_filter = ['payment_status', 'order_status', 'payment_method', 'whatsapp_sent', 'created_at']
-    search_fields = [
+    list_editable  = ['order_status', 'payment_status']
+    list_filter    = [
+        'payment_status', 'order_status', 'payment_method',
+        'is_partial_cod', 'whatsapp_sent', 'created_at',
+    ]
+    search_fields  = [
         'id', 'first_name', 'last_name', 'email', 'phone',
         'razorpay_order_id', 'delhivery_waybill',
     ]
     readonly_fields = [
         'created_at', 'updated_at',
         'razorpay_order_id', 'razorpay_payment_id',
-        # ── New logistics fields (system-managed, read-only in admin)
         'delhivery_waybill', 'whatsapp_sent',
+        # COD fields are system-computed at checkout — never edited in admin
+        'advance_amount', 'collectible_cod_amount', 'is_partial_cod',
     ]
-    actions = [export_to_csv]
-    inlines = [OrderItemInline]
+    actions       = [export_to_csv]
+    inlines       = [OrderItemInline]
     list_per_page = 25
 
     fieldsets = (
         ('Customer', {
             'fields': (('first_name', 'last_name'), 'email', 'phone'),
         }),
-        ('Shipping', {
+        ('Shipping Address', {
             'fields': (
                 'shipping_address', 'apartment', 'landmark',
                 'city', 'state', 'zip_code', 'country',
             ),
         }),
-        ('Financials', {
+        ('Product Financials', {
+            'description': 'These values reflect the product cost only. COD service charge is shown separately below.',
             'fields': (
                 'subtotal', 'discount_amount', 'shipping_fee',
-                'cod_fee', 'tax_amount', 'total_amount',
+                'tax_amount', 'total_amount',
                 'coupon_code', 'exchange_code_used',
             ),
         }),
-        ('Payment & Status', {
+        ('COD Service Charge Breakdown', {
+            'description': (
+                'advance_amount = COD upfront charge (2% of subtotal) + 18% GST on that charge. '
+                'This amount was paid ONLINE via Razorpay. It is NON-REFUNDABLE. '
+                'collectible_cod_amount = full product price paid by customer to the delivery agent.'
+            ),
+            'fields': ('is_partial_cod', 'advance_amount', 'collectible_cod_amount'),
+        }),
+        ('Payment & Order Status', {
             'fields': (
                 'payment_method', 'payment_status', 'delivered_at',
                 'order_status', 'razorpay_order_id', 'razorpay_payment_id',
@@ -91,7 +109,6 @@ class OrderAdmin(admin.ModelAdmin):
         ('Policy', {
             'fields': ('accepted_return_policy',),
         }),
-        # ── Updated Tracking fieldset — includes waybill + notification status
         ('Tracking & Logistics', {
             'fields': (
                 'tracking_link', 'tracking_note',
@@ -103,10 +120,27 @@ class OrderAdmin(admin.ModelAdmin):
         }),
     )
 
-    # ── Custom list display helpers
     def full_name(self, obj):
         return f"{obj.first_name} {obj.last_name}"
     full_name.short_description = "Customer"
+
+    def cod_charge_display(self, obj):
+        if obj.is_partial_cod:
+            return format_html(
+                '<span style="color:#2563eb;font-weight:600;" title="COD charge + GST paid online">₹{}</span>',
+                obj.advance_amount
+            )
+        return "—"
+    cod_charge_display.short_description = "COD Charge Paid"
+
+    def cod_due_display(self, obj):
+        if obj.is_partial_cod:
+            return format_html(
+                '<span style="color:#d97706;font-weight:600;" title="Product price due at delivery">₹{}</span>',
+                obj.collectible_cod_amount
+            )
+        return "—"
+    cod_due_display.short_description = "Due at Delivery"
 
     def delhivery_waybill_display(self, obj):
         if obj.delhivery_waybill:
@@ -117,44 +151,25 @@ class OrderAdmin(admin.ModelAdmin):
         return format_html('<span style="color:#9ca3af;">—</span>')
     delhivery_waybill_display.short_description = "Waybill"
 
-    # ── save_model: COD trigger for Delhivery + WhatsApp
     def save_model(self, request, obj, form, change):
-        # ── Auto-set delivered_at timestamp (existing logic)
         if change and 'order_status' in form.changed_data and obj.order_status == 'Delivered':
             if not obj.delivered_at:
                 obj.delivered_at = timezone.now()
 
         super().save_model(request, obj, form, change)
 
-        # ── COD logistics trigger
-        # Fire when admin moves a COD order to 'Confirmed' or 'Shipped'
-        # (Online orders are handled in payments/views.py after Razorpay verification)
+        # Trigger logistics for COD when admin confirms or ships
         cod_trigger_statuses = ('Confirmed', 'Shipped')
         status_changed = change and 'order_status' in form.changed_data
-        is_cod = obj.payment_method == 'COD'
+        is_cod         = obj.payment_method == 'COD'
 
         if status_changed and is_cod and obj.order_status in cod_trigger_statuses:
             try:
-                # Import here to avoid circular imports at module load time
                 from .services import process_order_logistics_and_notification
-
                 process_order_logistics_and_notification(obj)
-
-                # ── Refresh from DB to read updated waybill/whatsapp_sent
                 obj.refresh_from_db()
 
-                # ── Show success banners in the Django admin UI
-                if obj.delhivery_waybill == "E-WAY_BILL_REQUIRED":
-                    # Clear out the text code field so the system doesn't save a fallback tracking key string
-                    obj.delhivery_waybill = ""
-                    obj.save(update_fields=['delhivery_waybill'])
-                    
-                    self.message_user(
-                        request,
-                        f"⚠️ Order total exceeds ₹50,000. Delhivery automated booking skipped. Please register an E-Way Bill manually before processing shipping labels.",
-                        level='WARNING',
-                    )
-                elif obj.delhivery_waybill:
+                if obj.delhivery_waybill:
                     self.message_user(
                         request,
                         f"✅ Delhivery shipment created — Waybill: {obj.delhivery_waybill}",
@@ -170,7 +185,7 @@ class OrderAdmin(admin.ModelAdmin):
                 if obj.whatsapp_sent:
                     self.message_user(
                         request,
-                        f"✅ WhatsApp 'Order Placed' message sent to {obj.phone}",
+                        f"✅ WhatsApp message sent to {obj.phone}",
                         level='SUCCESS',
                     )
                 else:
@@ -179,26 +194,25 @@ class OrderAdmin(admin.ModelAdmin):
                         "⚠️ WhatsApp message could not be sent. Check server logs.",
                         level='WARNING',
                     )
+
             except Exception as exc:
-                import logging
-                logging.getLogger(__name__).error(
+                import logging as _logging
+                _logging.getLogger(__name__).error(
                     f"[Admin] Logistics trigger failed for Order #{obj.id}: {exc}",
                     exc_info=True,
                 )
                 self.message_user(
                     request,
-                    f"❌ Logistics service error for Order #{obj.id}: {exc}. Check logs.",
+                    f"❌ Logistics error for Order #{obj.id}: {exc}",
                     level='ERROR',
                 )
 
-
-# ── Return & Exchange admin (unchanged from original) ────────────────────────
 
 def approve_and_generate_code(modeladmin, request, queryset):
     for req in queryset.filter(status='Pending'):
         req.status = 'Approved'
         req.save()
-approve_and_generate_code.short_description = "Approve"
+approve_and_generate_code.short_description = "Approve selected requests"
 
 
 def reject_request(modeladmin, request, queryset):
@@ -211,31 +225,31 @@ reject_request.short_description = "Reject selected requests"
 
 @admin.register(ReturnRequest)
 class ReturnRequestAdmin(admin.ModelAdmin):
-    list_display = ['id', 'get_order_id', 'get_customer', 'request_type', 'status', 'has_video', 'created_at']
-    list_filter = ['status', 'request_type']
-    search_fields = ['order__id', 'order__user__email']
+    list_display    = ['id', 'get_order_id', 'get_customer', 'request_type', 'status', 'has_video', 'created_at']
+    list_filter     = ['status', 'request_type']
+    search_fields   = ['order__id', 'order__user__email']
     readonly_fields = ['order', 'user', 'created_at', 'updated_at', 'exchange_code']
-    actions = [approve_and_generate_code, reject_request]
-    list_per_page = 25
+    actions         = [approve_and_generate_code, reject_request]
+    list_per_page   = 25
 
-    def get_order_id(self, obj): return f"#{obj.order.id}"
+    def get_order_id(self, obj):  return f"#{obj.order.id}"
     get_order_id.short_description = "Order"
 
-    def get_customer(self, obj): return obj.user.email
+    def get_customer(self, obj):  return obj.user.email
     get_customer.short_description = "Customer"
 
-    def has_video(self, obj): return bool(obj.defect_video_url)
+    def has_video(self, obj):     return bool(obj.defect_video_url)
     has_video.boolean = True
     has_video.short_description = "Video?"
 
 
 @admin.register(ExchangeCode)
 class ExchangeCodeAdmin(admin.ModelAdmin):
-    list_display = ['code', 'get_order', 'original_order_value', 'is_used', 'expires_at', 'created_at']
-    list_filter = ['is_used']
-    search_fields = ['code', 'order__id']
+    list_display    = ['code', 'get_order', 'original_order_value', 'is_used', 'expires_at', 'created_at']
+    list_filter     = ['is_used']
+    search_fields   = ['code', 'order__id']
     readonly_fields = ['code', 'created_at', 'used_at']
-    list_per_page = 25
+    list_per_page   = 25
 
     def get_order(self, obj): return f"Order #{obj.order.id}"
     get_order.short_description = "Order"

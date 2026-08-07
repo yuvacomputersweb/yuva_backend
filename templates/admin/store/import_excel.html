@@ -1,0 +1,279 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Import Products from Excel | Yuva Computers Admin{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans "Home" %}</a>
+  &rsaquo;
+  <a href="{% url 'admin:store_product_changelist' %}">Products</a>
+  &rsaquo;
+  {% trans "Import Excel" %}
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .excel-import-wrap {
+    max-width: 680px;
+    margin: 24px 0;
+  }
+  .excel-card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 32px 36px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  }
+  .excel-card h2 {
+    margin-top: 0;
+    font-size: 20px;
+    color: #1F4C8C;
+    border-bottom: 2px solid #1F4C8C;
+    padding-bottom: 12px;
+    margin-bottom: 20px;
+  }
+  .info-box {
+    background: #EBF3FB;
+    border-left: 4px solid #1F4C8C;
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin-bottom: 24px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #333;
+  }
+  .info-box strong { color: #1F4C8C; }
+  .info-box ul { margin: 6px 0 0 18px; padding: 0; }
+  .info-box li { margin-bottom: 4px; }
+  .file-drop-zone {
+    border: 2px dashed #1F4C8C;
+    border-radius: 8px;
+    padding: 36px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: background .2s;
+    margin-bottom: 20px;
+    position: relative;
+  }
+  .file-drop-zone:hover { background: #EBF3FB; }
+  .file-drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .file-drop-zone .icon { font-size: 36px; display: block; margin-bottom: 8px; }
+  .file-drop-zone .label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1F4C8C;
+  }
+  .file-drop-zone .sublabel {
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+  }
+  #file-chosen {
+    font-size: 13px;
+    color: #198754;
+    font-weight: 600;
+    margin-top: 8px;
+    min-height: 20px;
+    text-align: center;
+  }
+  .btn-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .btn-import {
+    background: #1F4C8C;
+    color: #fff;
+    border: none;
+    padding: 10px 28px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: .03em;
+    transition: background .2s;
+  }
+  .btn-import:hover { background: #163a6b; }
+  .btn-import:disabled { background: #90a4c8; cursor: not-allowed; }
+  .btn-cancel {
+    color: #555;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .btn-cancel:hover { color: #000; }
+  .sheet-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 16px;
+  }
+  .sheet-table th {
+    background: #1F4C8C;
+    color: #fff;
+    padding: 7px 10px;
+    text-align: left;
+  }
+  .sheet-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #eee;
+    vertical-align: top;
+  }
+  .sheet-table tr:nth-child(even) td { background: #f7fafd; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .badge-req { background: #fde8e8; color: #b91c1c; }
+  .badge-opt { background: #d1fae5; color: #065f46; }
+</style>
+
+<div class="excel-import-wrap">
+  <div class="excel-card">
+    <h2>⬆ Import Products from Excel</h2>
+
+    <div class="info-box">
+      <strong>How it works:</strong>
+      <ul>
+        <li>Download the template first using the <strong>Export Excel</strong> button on the Products list page — it has the correct sheet names and column order.</li>
+        <li>Fill in your data starting from <strong>Row 3</strong> (Row 1 = help text, Row 2 = column headers).</li>
+        <li>Sheets are processed in order: Categories → Brands → UsageTags → Products → Variants → Reviews → Coupons → SiteConfig.</li>
+        <li>If a row has an <strong>id</strong>, it will be <em>updated</em>. If id is blank, it will be <em>created</em> (matched by SKU / slug / code).</li>
+        <li>Invalid rows are <strong>skipped</strong> with a warning — the rest still import.</li>
+        <li>For images, paste a <strong>public URL</strong> (direct image link or Google Drive share link).</li>
+        <li>For <code>usage_tag_slugs</code> use comma-separated slugs, e.g. <code>gaming,coding</code>.</li>
+      </ul>
+    </div>
+
+    <form method="POST" enctype="multipart/form-data" id="import-form">
+      {% csrf_token %}
+
+      <div class="file-drop-zone" id="drop-zone">
+        <input
+          type="file"
+          name="excel_file"
+          id="excel-file-input"
+          accept=".xlsx,.xls"
+          required
+          onchange="handleFileSelect(this)"
+        />
+        <span class="icon">📊</span>
+        <div class="label">Click or drag & drop your Excel file here</div>
+        <div class="sublabel">Accepted formats: .xlsx, .xls</div>
+      </div>
+      <div id="file-chosen"></div>
+
+      <div class="btn-row" style="margin-top: 20px;">
+        <button type="submit" class="btn-import" id="submit-btn" disabled>
+          ⬆ Start Import
+        </button>
+        <a href="{% url 'admin:store_product_changelist' %}" class="btn-cancel">
+          ✕ Cancel
+        </a>
+      </div>
+    </form>
+
+    <hr style="margin: 32px 0 20px; border-color: #eee;" />
+
+    <h3 style="font-size:15px; color:#1F4C8C; margin-bottom:12px;">Sheet Reference</h3>
+    <table class="sheet-table">
+      <thead>
+        <tr>
+          <th>Sheet</th>
+          <th>Key Columns</th>
+          <th>Match Key</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Categories</strong></td>
+          <td>id, name, slug, is_featured, image_url</td>
+          <td>slug</td>
+        </tr>
+        <tr>
+          <td><strong>Brands</strong></td>
+          <td>id, name, slug</td>
+          <td>slug</td>
+        </tr>
+        <tr>
+          <td><strong>UsageTags</strong></td>
+          <td>id, name, slug, icon</td>
+          <td>slug</td>
+        </tr>
+        <tr>
+          <td><strong>Products</strong></td>
+          <td>id, title, sku, brand_slug, category_slug, condition, price, processor, ram, storage, display, graphics, os, battery, weight, ports, wifi, bluetooth, description, highlights, is_new_arrival, is_best_seller, is_trending, is_best_deal, is_active, usage_tag_slugs</td>
+          <td>sku</td>
+        </tr>
+        <tr>
+          <td><strong>ProductVariants</strong></td>
+          <td>id, product_sku, processor, ram, storage, stock, price_override</td>
+          <td>product_sku + processor + ram + storage</td>
+        </tr>
+        <tr>
+          <td><strong>Reviews</strong></td>
+          <td>id, product_sku, user_name, rating, comment, location, is_featured</td>
+          <td>id (create new if blank)</td>
+        </tr>
+        <tr>
+          <td><strong>Coupons</strong></td>
+          <td>id, code, discount_type, value, min_order_value, valid_from, valid_to, active, usage_limit</td>
+          <td>code</td>
+        </tr>
+        <tr>
+          <td><strong>SiteConfig</strong></td>
+          <td>id, shipping_fee, free_shipping_threshold, cod_surcharge_percentage, tax_percentage, whatsapp_number</td>
+          <td>id (or updates first row)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  function handleFileSelect(input) {
+    const btn = document.getElementById('submit-btn');
+    const label = document.getElementById('file-chosen');
+    if (input.files && input.files.length > 0) {
+      label.textContent = '✓ Selected: ' + input.files[0].name;
+      btn.disabled = false;
+    } else {
+      label.textContent = '';
+      btn.disabled = true;
+    }
+  }
+
+  // Show loading state on submit
+  document.getElementById('import-form').addEventListener('submit', function () {
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Importing… please wait';
+  });
+
+  // Drag & drop visual feedback
+  const zone = document.getElementById('drop-zone');
+  zone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    zone.style.background = '#dbeafe';
+  });
+  zone.addEventListener('dragleave', () => {
+    zone.style.background = '';
+  });
+  zone.addEventListener('drop', (e) => {
+    zone.style.background = '';
+  });
+</script>
+{% endblock %}
