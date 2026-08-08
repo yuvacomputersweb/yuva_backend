@@ -95,7 +95,8 @@ style_sheet(ws4,
         "Newline-separated points", "e.g. 6 Months Warranty", "Newline-separated details",
         "e.g. 350+ Service Centers", "e.g. 1 Year Warranty", "e.g. 14 Days Return",
         "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE",
-        "Comma-separated usage tag slugs e.g. gaming,coding"
+        "Comma-separated usage tag slugs e.g. gaming,coding",
+        "Comma or newline separated image URLs (Drive links OK). First = primary"
     ],
     [
         "id", "title", "slug", "sku", "brand_slug", "category_slug", "condition",
@@ -104,7 +105,7 @@ style_sheet(ws4,
         "description", "highlights", "refurbishment_summary", "refurbishment_points",
         "warranty_summary", "warranty_details", "service_centers", "warranty_period",
         "return_policy", "is_new_arrival", "is_best_seller", "is_trending", "is_best_deal",
-        "is_active", "usage_tag_slugs"
+        "is_active", "usage_tag_slugs", "image_urls"
     ],
     [
         [
@@ -118,7 +119,22 @@ style_sheet(ws4,
             "40+ Quality Checks Passed", "Display Checked\nBattery Health > 90%\nSound & Mic Tested",
             "6 Months Warranty Included", "Covers internal components and adapter replacement.",
             "350+ Service Centers", "6 Months Warranty", "7 Days Replacement",
-            "TRUE", "FALSE", "TRUE", "TRUE", "TRUE", "business,coding"
+            "TRUE", "FALSE", "TRUE", "TRUE", "TRUE", "business,coding",
+            ""
+        ],
+        [
+            "", "HP Pavilion 15", "hp-pavilion-15", "HP-PAV-15",
+            "hp", "laptops", "good", "27999.00", "34000.00",
+            "Intel Core i5 11th Gen", "8GB DDR4", "512GB NVMe SSD", "15.6-inch Full HD",
+            "Intel Iris Xe", "Windows 11 Home", "3-Cell 41Wh", "1.75 kg",
+            "USB-A x2, Type-C x1, HDMI x1", "Wi-Fi 6", "Bluetooth 5.1",
+            "Everyday performance laptop in great condition.",
+            "Intel i5 11th Gen\n8GB RAM & 512GB SSD",
+            "40+ Quality Checks Passed", "Display Checked\nBattery Health > 90%\nSound & Mic Tested",
+            "6 Months Warranty Included", "Covers internal components and adapter replacement.",
+            "350+ Service Centers", "6 Months Warranty", "14 Days Return",
+            "FALSE", "TRUE", "FALSE", "FALSE", "TRUE", "business,coding",
+            "https://drive.google.com/file/d/1W5xzHAfBIWVZRnPNepp7kpBLDJoCiMBe/view?usp=sharing, https://drive.google.com/file/d/1bgGAsruTtcGVU5VTJ-FqHOCaCgZSOhaQ/view?usp=sharing"
         ]
     ]
 )

@@ -235,6 +235,7 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
         "e.g. 350+ Service Centers", "e.g. 1 Year Warranty", "e.g. 14 Days Return",
         "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE",
         "Comma-separated usage tag slugs e.g. gaming,coding",
+        "Comma or newline separated image URLs (Drive links OK). First = primary",
     ]
     headers = [
         "id", "title", "slug", "sku",
@@ -247,7 +248,7 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
         "warranty_summary", "warranty_details",
         "service_centers", "warranty_period", "return_policy",
         "is_new_arrival", "is_best_seller", "is_trending", "is_best_deal", "is_active",
-        "usage_tag_slugs",
+        "usage_tag_slugs", "image_urls",
     ]
     ws.append(help_row)
     ws.append(headers)
@@ -256,6 +257,9 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
 
     for idx, p in enumerate(products, start=3):
         usage_slugs = ",".join(p.usage_tags.values_list("slug", flat=True))
+        image_urls = ", ".join(
+            pi.image.url for pi in p.images.all()
+        )
         ws.append([
             p.id, p.title, p.slug, p.sku,
             p.brand.slug if p.brand else "",
@@ -272,6 +276,7 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
             str(p.is_new_arrival), str(p.is_best_seller),
             str(p.is_trending), str(p.is_best_deal), str(p.is_active),
             usage_slugs,
+            image_urls,
         ])
         _style_data_row(ws, idx, len(headers), alt=(idx % 2 == 0))
     _freeze_and_fit(ws)
@@ -489,7 +494,7 @@ def import_from_excel(file_obj) -> ExcelImportResult:
 
     from store.models import (
         Brand, Category, UsageTag, Product, ProductVariant,
-        Review, Coupon, SiteConfig,
+        Review, Coupon, SiteConfig, ProductImage,
     )
 
     result = ExcelImportResult()
@@ -679,6 +684,27 @@ def import_from_excel(file_obj) -> ExcelImportResult:
                 slugs = [s.strip() for s in usage_slugs_raw.split(",") if s.strip()]
                 tags = UsageTag.objects.filter(slug__in=slugs)
                 obj.usage_tags.set(tags)
+
+            # Handle product images (one or multiple, comma/newline separated)
+            image_urls_raw = _str(row.get("image_urls"))
+            if image_urls_raw:
+                urls = [
+                    u.strip()
+                    for u in image_urls_raw.replace("\n", ",").split(",")
+                    if u.strip()
+                ]
+                if urls:
+                    # Replace existing images so re-imports stay idempotent
+                    obj.images.all().delete()
+                    for idx, url in enumerate(urls):
+                        saved_path = _download_image(url, "products")
+                        if saved_path:
+                            ProductImage.objects.create(
+                                product=obj,
+                                image=saved_path,
+                                is_primary=(idx == 0),
+                                order=idx,
+                            )
 
             result.add_created("Product") if created else result.add_updated("Product")
 
