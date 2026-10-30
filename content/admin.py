@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from .models import (
+    AnnouncementBar,
     HeroSlide, SiteStat, HomeReview, PartnerBrand, AboutContent,
     CompanyContent, CompanyTimeline, CompanyInvestor,
     CompanyCertification, CompanyPartner,
@@ -10,10 +11,18 @@ from .models import (
 )
 
 
+@admin.register(AnnouncementBar)
+class AnnouncementBarAdmin(admin.ModelAdmin):
+    list_display = ['__str__', 'text', 'color', 'starts_at', 'ends_at', 'is_active']
+    list_editable = ['is_active']
+    fields = ['title', 'text', 'link', 'color', 'starts_at', 'ends_at', 'is_active']
+
+
 @admin.register(HeroSlide)
 class HeroSlideAdmin(admin.ModelAdmin):
-    list_display = ['order', 'image_preview', 'is_active']
+    list_display = ['order', 'image_preview', 'title', 'link', 'is_active']
     list_editable = ['order', 'is_active']
+    fields = ['image', 'mobile_image', 'title', 'link', 'order', 'is_active']
     list_display_links = ['image_preview']
 
     def image_preview(self, obj):

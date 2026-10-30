@@ -1,11 +1,12 @@
 from django.urls import path
 from .views import (
     CheckoutView, OrderListView, order_detail,
-    ReturnRequestCreateView, ValidateExchangeCodeView, CancelOrderView
+    ReturnRequestCreateView, ValidateExchangeCodeView, CancelOrderView, TrackOrderView
 )
 
 urlpatterns = [
     path('checkout/', CheckoutView.as_view(), name='checkout'),
+    path('track/', TrackOrderView.as_view(), name='track-order'),
     path('', OrderListView.as_view(), name='order-list'),
     path('<int:pk>/', order_detail, name='order-detail'),
     path('<int:pk>/cancel/', CancelOrderView.as_view(), name='cancel-order'),
