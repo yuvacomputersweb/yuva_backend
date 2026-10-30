@@ -105,3 +105,29 @@ class TradeInRequest(models.Model):
 
     def __str__(self):
         return f"{self.name} — {self.brand} {self.model_name}".strip()
+
+
+class CustomerPurchase(models.Model):
+    """A past (mostly in-store) sale, imported from the sales register."""
+    name = models.CharField(max_length=150, blank=True)
+    phone = models.CharField(max_length=10, db_index=True, help_text='10-digit mobile number.')
+    sale_date = models.DateField(db_index=True)
+    store = models.CharField(max_length=80, blank=True)
+    model_name = models.CharField('Laptop / model', max_length=200, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    notes = models.TextField(blank=True)
+    source_ref = models.CharField(
+        max_length=40, help_text='Sheet + row number it came from, so re-importing updates instead of duplicating.'
+    )
+    marketing_opt_out = models.BooleanField(
+        'Opted out of offers', default=False, help_text='Never include in offer broadcasts.'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-sale_date']
+        verbose_name = 'Past customer purchase'
+        constraints = [models.UniqueConstraint(fields=['source_ref'], name='unique_purchase_source_ref')]
+
+    def __str__(self):
+        return f"{self.name or self.phone} — {self.sale_date:%d %b %Y}"

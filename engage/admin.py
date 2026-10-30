@@ -1,7 +1,17 @@
-from django.contrib import admin
+import csv
+from datetime import date, timedelta
+
+from django import forms
+from django.contrib import admin, messages
+from django.http import HttpResponse
+from django.shortcuts import redirect, render
+from django.urls import path
+from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import CartSnapshot, StockAlert, TradeInRequest, WhatsAppMessage
+from .customer_import import import_sales_register
+from .models import CartSnapshot, CustomerPurchase, StockAlert, TradeInRequest, WhatsAppMessage
+from .views import _add_months, store_policy
 
 
 @admin.register(TradeInRequest)
@@ -69,3 +79,134 @@ class WhatsAppMessageAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+# ── Past customers ───────────────────────────────────────────────────────────
+
+def _months_ago(months: int) -> date:
+    return _add_months(timezone.localdate(), -months)
+
+
+class WarrantyFilter(admin.SimpleListFilter):
+    title = 'warranty'
+    parameter_name = 'warranty'
+
+    def lookups(self, request, model_admin):
+        return [
+            ('testing', 'In 15-day testing warranty'),
+            ('active', 'Parts warranty active'),
+            ('expiring', 'Expiring in next 30 days'),
+            ('expired', 'Expired'),
+        ]
+
+    def queryset(self, request, qs):
+        days, months, _ = store_policy()
+        today = timezone.localdate()
+        start = _add_months(today, -months)  # bought after this → still covered
+        if self.value() == 'testing':
+            return qs.filter(sale_date__gte=today - timedelta(days=days))
+        if self.value() == 'active':
+            return qs.filter(sale_date__gt=start)
+        if self.value() == 'expiring':
+            return qs.filter(sale_date__gt=start, sale_date__lte=start + timedelta(days=30))
+        if self.value() == 'expired':
+            return qs.filter(sale_date__lte=start)
+        return qs
+
+
+class PurchaseAgeFilter(admin.SimpleListFilter):
+    title = 'bought'
+    parameter_name = 'bought'
+
+    def lookups(self, request, model_admin):
+        return [
+            ('15d', 'Last 15 days (ask for a Google review)'),
+            ('1y', 'Under 1 year (service check-up)'),
+            ('1-3y', '1–3 years ago (RAM/SSD/battery upgrade)'),
+            ('3y', '3+ years ago (exchange offer)'),
+        ]
+
+    def queryset(self, request, qs):
+        today = timezone.localdate()
+        if self.value() == '15d':
+            return qs.filter(sale_date__gte=today - timedelta(days=15))
+        if self.value() == '1y':
+            return qs.filter(sale_date__gt=_months_ago(12))
+        if self.value() == '1-3y':
+            return qs.filter(sale_date__lte=_months_ago(12), sale_date__gt=_months_ago(36))
+        if self.value() == '3y':
+            return qs.filter(sale_date__lte=_months_ago(36))
+        return qs
+
+
+class ImportForm(forms.Form):
+    file = forms.FileField(help_text='The sales register Excel (.xlsx). Re-uploading the same rows updates them.')
+    store = forms.CharField(initial='Dilsukhnagar HQ', help_text='Used when a row has no store.')
+
+
+@admin.register(CustomerPurchase)
+class CustomerPurchaseAdmin(admin.ModelAdmin):
+    change_list_template = 'admin/engage/customerpurchase/change_list.html'
+    list_display = ('sale_date', 'name', 'phone_link', 'model_name', 'store', 'amount', 'warranty', 'marketing_opt_out')
+    list_filter = (WarrantyFilter, PurchaseAgeFilter, 'store', 'marketing_opt_out')
+    list_editable = ('marketing_opt_out',)
+    search_fields = ('name', 'phone', 'model_name')
+    date_hierarchy = 'sale_date'
+    readonly_fields = ('source_ref', 'created_at')
+    actions = ['export_for_whatsapp']
+    list_per_page = 50
+
+    @admin.display(description='Phone')
+    def phone_link(self, obj):
+        return format_html('<a href="https://wa.me/91{}" target="_blank">{}</a>', obj.phone, obj.phone)
+
+    @admin.display(description='Warranty')
+    def warranty(self, obj):
+        days, months, _ = store_policy()
+        today = timezone.localdate()
+        end = _add_months(obj.sale_date, months)
+        if obj.sale_date >= today - timedelta(days=days):
+            return format_html('<b style="color:#4c8a1f">Testing period</b>')
+        if end >= today:
+            return format_html('<span style="color:#4c8a1f">Till {}</span>', end.strftime('%d %b %Y'))
+        return format_html('<span style="color:#999">Expired</span>')
+
+    @admin.action(description='Export selected for WhatsApp / Meta ads (CSV, one row per phone, skips opt-outs)')
+    def export_for_whatsapp(self, request, queryset):
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="yuva_customers.csv"'
+        writer = csv.writer(response)
+        writer.writerow(['Name', 'Phone', 'Last purchase', 'Model', 'Store'])
+        seen = set()
+        for p in queryset.filter(marketing_opt_out=False).order_by('phone', '-sale_date'):
+            if p.phone in seen:
+                continue
+            seen.add(p.phone)
+            writer.writerow([p.name, f'91{p.phone}', p.sale_date.isoformat(), p.model_name, p.store])
+        return response
+
+    def get_urls(self):
+        return [
+            path('import/', self.admin_site.admin_view(self.import_view), name='engage_customerpurchase_import'),
+        ] + super().get_urls()
+
+    def import_view(self, request):
+        form = ImportForm(request.POST or None, request.FILES or None)
+        if request.method == 'POST' and form.is_valid():
+            try:
+                stats = import_sales_register(form.cleaned_data['file'], default_store=form.cleaned_data['store'])
+            except Exception as exc:  # noqa: BLE001 — show any file problem to the admin
+                messages.error(request, f'Could not import: {exc}')
+            else:
+                messages.success(request, (
+                    f"Imported/updated {stats['imported']} of {stats['rows']} rows. "
+                    f"Skipped {stats['skipped_no_phone']} without a valid mobile and {stats['skipped_no_date']} without a date."
+                ))
+                return redirect('admin:engage_customerpurchase_changelist')
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Import past customers',
+            'form': form,
+            'opts': self.model._meta,
+        }
+        return render(request, 'admin/engage/customerpurchase/import.html', context)

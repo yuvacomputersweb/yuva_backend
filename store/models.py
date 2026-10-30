@@ -218,6 +218,59 @@ class SiteConfig(models.Model):
     low_stock_threshold = models.PositiveIntegerField(
         default=1, help_text="Send a low-stock alert when a configuration drops to this many units."
     )
+    # ── One warranty and refurbishment policy for every product ──
+    testing_warranty_days = models.PositiveIntegerField(
+        default=15, help_text="Replacement window for any damage or problem after delivery."
+    )
+    parts_warranty_months = models.PositiveIntegerField(default=12)
+    warranty_summary = models.CharField(
+        max_length=120, default="1-Year Parts Warranty + 15-Day Testing Warranty",
+        help_text="Headline shown on every product's Warranty tab and trust badge."
+    )
+    warranty_points = models.TextField(
+        default=(
+            "15-day testing warranty: replacement for any damage or problem found in the first 15 days\n"
+            "RAM and hard disk / SSD: 1-year replacement warranty\n"
+            "Motherboard: 1-year repair warranty (if repairable)\n"
+            "Battery and charger: covered by the 15-day testing warranty\n"
+            "Lifetime service support at every Yuva store"
+        ),
+        help_text="What is covered. One point per line."
+    )
+    warranty_exclusions = models.TextField(
+        default=(
+            "Physical damage, cracks, dents or a broken screen after delivery\n"
+            "Liquid or water damage, burnt parts or power-surge damage\n"
+            "Warranty sticker removed or repairs done outside Yuva\n"
+            "Software, virus or data issues (we can reinstall the OS for you)"
+        ),
+        blank=True, help_text="What is not covered. One point per line."
+    )
+    warranty_claim_steps = models.TextField(
+        default=(
+            "WhatsApp us your order number or serial number and a short video of the problem\n"
+            "Our technician checks it, usually the same day\n"
+            "Bring it to any Yuva store, or ship it back with Delhivery\n"
+            "We replace or repair it and return it to you"
+        ),
+        blank=True, help_text="How to claim. One step per line."
+    )
+    refurbishment_summary = models.CharField(max_length=120, default="50-point quality check")
+    refurbishment_points = models.TextField(
+        default=(
+            "Every component inspected individually, not in batches\n"
+            "Faulty parts replaced in our in-house refurbishment lab\n"
+            "Display checked for dead pixels, spots and backlight bleed\n"
+            "Battery health tested and backup verified\n"
+            "Keyboard, touchpad, ports, speakers, webcam and Wi-Fi tested\n"
+            "Stress-tested for performance and heating\n"
+            "Fresh, genuine OS installed with drivers and updates\n"
+            "Deep-cleaned, sanitised and sealed with a Yuva warranty sticker"
+        ),
+        help_text="Shown on every product's Refurbishment tab. One point per line."
+    )
+    service_summary = models.CharField(max_length=80, default="Service at 17+ Yuva stores")
+
     in_the_box = models.TextField(
         default="Original charger\nFree laptop bag\nFree wireless mouse", blank=True,
         help_text="Shown as 'What's in the box' on laptop pages. One item per line."

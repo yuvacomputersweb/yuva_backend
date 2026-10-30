@@ -255,6 +255,13 @@ class SiteConfigAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Shipping & payment", {"fields": ("shipping_fee", "free_shipping_threshold", "cod_surcharge_percentage", "tax_percentage")}),
         ("WhatsApp", {"fields": ("whatsapp_number", "alert_whatsapp_numbers", "low_stock_threshold")}),
+        ("Warranty (same on every product)", {"fields": (
+            "warranty_summary", "testing_warranty_days", "parts_warranty_months",
+            "warranty_points", "warranty_exclusions", "warranty_claim_steps",
+        )}),
+        ("Refurbishment & service (same on every product)", {"fields": (
+            "refurbishment_summary", "refurbishment_points", "service_summary",
+        )}),
         ("Product pages", {"fields": ("in_the_box",)}),
     )
 

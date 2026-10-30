@@ -1,0 +1,5 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  <li><a href="{% url 'admin:engage_customerpurchase_import' %}" class="addlink">Import sales register (Excel)</a></li>
+  {{ block.super }}
+{% endblock %}
