@@ -91,3 +91,66 @@ value to stop that message. Restart gunicorn after changing it.
 
 Each message is sent at most once per order. To send one again, use the
 admin action **"Resend WhatsApp message for current status"**.
+
+---
+
+# Shop alerts and reminders (engage app)
+
+Create these in the same WATI account. Use the template name and the variable
+names exactly as shown. Meta may make **back_in_stock** and **cart_reminder**
+Marketing templates. They still work, but each message costs a little more.
+
+### 7. `back_in_stock` (to the customer)
+Variables: `product_name`, `product_link`
+```
+Good news! {{product_name}} is back in stock at Yuva Computers.
+
+You asked us to let you know. See it here before it sells out: {{product_link}}
+```
+
+### 8. `cart_reminder` (to the customer)
+Variables: `name`, `product_name`, `cart_link`
+```
+Hi {{name}}, you left {{product_name}} in your cart at Yuva Computers.
+
+Complete your order here: {{cart_link}}
+Questions about the laptop? Just reply to this message.
+```
+
+### 9. `return_update` (to the customer)
+Variables: `name`, `order_number`, `status`, `note`
+```
+Hi {{name}}, your replacement request for order #{{order_number}} is {{status}}.
+
+{{note}}
+```
+
+### 10. `low_stock_alert` (to the shop)
+Variables: `product_name`, `stock_left`
+```
+Low stock alert: {{product_name}} has only {{stock_left}} left on the website.
+```
+
+### 11. `new_lead` (to the shop)
+Variables: `lead_type`, `customer_name`, `customer_phone`, `details`
+```
+New {{lead_type}} from the website.
+
+Customer: {{customer_name}} ({{customer_phone}})
+Details: {{details}}
+```
+
+### 12. `daily_summary` (to the shop)
+Variables: `date`, `new_orders`, `revenue`, `to_ship`, `pending_returns`
+```
+Yuva Computers summary for {{date}}
+
+New orders: {{new_orders}}
+Paid today: {{revenue}}
+Waiting to ship: {{to_ship}}
+Pending replacement requests: {{pending_returns}}
+```
+
+Shop alerts go to the numbers in **Admin → Site Configuration → Alert WhatsApp
+numbers** (comma-separated). Every message is listed in **Admin → Customer
+engagement → WhatsApp messages**.
