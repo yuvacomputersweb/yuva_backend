@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from .models import (
-    AnnouncementBar,
     HeroSlide, SiteStat, HomeReview, PartnerBrand, AboutContent,
     CompanyContent, CompanyTimeline, CompanyInvestor,
     CompanyCertification, CompanyPartner,
@@ -13,7 +12,7 @@ from .models import (
 class HeroSlideSerializer(serializers.ModelSerializer):
     class Meta:
         model = HeroSlide
-        fields = ['id', 'image', 'mobile_image', 'title', 'link', 'order']
+        fields = ['id', 'image', 'order']
 
 
 class SiteStatSerializer(serializers.ModelSerializer):
@@ -128,10 +127,3 @@ class BlogDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Blog
         fields = ['id', 'title', 'slug', 'cover_image', 'excerpt', 'paragraphs', 'created_at', 'updated_at']
-
-
-class AnnouncementBarSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AnnouncementBar
-        fields = ['id', 'title', 'text', 'link', 'color', 'ends_at']
-
