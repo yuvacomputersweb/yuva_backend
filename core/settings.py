@@ -250,6 +250,10 @@ WA_TEMPLATE_ORDER_CANCELLED  = os.environ.get('WA_TEMPLATE_ORDER_CANCELLED', 'or
 
 SITE_URL = os.environ.get('SITE_URL', 'https://www.yuvacomputers.in')
 
+# Shared secret for POST /api/store/stock-sync/ (stock pushed from the shop's stock app).
+# Empty = the endpoint is switched off.
+STOCK_SYNC_TOKEN = os.environ.get('STOCK_SYNC_TOKEN', '')
+
 # Non-order WhatsApp templates (engage app). Empty string = switched off.
 WA_TEMPLATE_BACK_IN_STOCK = os.environ.get('WA_TEMPLATE_BACK_IN_STOCK', 'back_in_stock')
 WA_TEMPLATE_CART_REMINDER = os.environ.get('WA_TEMPLATE_CART_REMINDER', 'cart_reminder')

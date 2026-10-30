@@ -304,3 +304,213 @@ class CategoryBrandListView(generics.ListAPIView):
     def get_queryset(self):
         category_slug = self.kwargs.get('slug')
         return Brand.objects.filter(products__category__slug=category_slug).distinct()
+
+
+def _flag(value) -> bool:
+    """JSON true/false, or the strings "true"/"1"/"yes"."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+def _stock_sync_denied(request):
+    """None when the X-Stock-Sync-Token header matches settings.STOCK_SYNC_TOKEN, else the error response."""
+    import secrets
+    from django.conf import settings
+
+    expected = getattr(settings, 'STOCK_SYNC_TOKEN', '') or ''
+    if not expected:
+        return Response({'error': 'Stock sync is switched off (STOCK_SYNC_TOKEN not set)'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    given = request.headers.get('X-Stock-Sync-Token', '') or ''
+    if not secrets.compare_digest(given.encode(), expected.encode()):
+        return Response({'error': 'Invalid token'}, status=status.HTTP_403_FORBIDDEN)
+    return None
+
+
+class StockSyncView(APIView):
+    """
+    Stock pushed from the shop's stock app. Only `stock` changes.
+
+    POST /api/store/stock-sync/
+    Header:  X-Stock-Sync-Token: <settings.STOCK_SYNC_TOKEN>
+    Body:    {"items": [{"id": 11, "stock": 4},
+                        {"product_sku": "DELL-5420", "processor": "...", "ram": "8GB", "storage": "256GB SSD", "stock": 0}],
+              "dry_run": false}
+
+    A variant is found by `id`, or by product SKU + processor + RAM + storage
+    (the same keys as the admin Excel import). Each change is saved with
+    variant.save(update_fields=["stock"]) so the engage signals still send the
+    back-in-stock and low-stock WhatsApp messages.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    MAX_ITEMS = 2000
+    # Refuse a push that would suddenly sell out at least this many variants
+    # *and* more than this share of everything in stock (likely a broken list),
+    # unless the request sends "force": true.
+    MASS_SELLOUT_MIN = 5
+    MASS_SELLOUT_SHARE = 0.5
+
+    def post(self, request):
+        import logging
+        from django.db import transaction
+        from .models import ProductVariant
+
+        denied = _stock_sync_denied(request)
+        if denied:
+            return denied
+
+        items = request.data.get('items') if isinstance(request.data, dict) else None
+        if not isinstance(items, list):
+            return Response({'error': '"items" must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(items) > self.MAX_ITEMS:
+            return Response({'error': f'Too many items (max {self.MAX_ITEMS})'}, status=status.HTTP_400_BAD_REQUEST)
+        dry_run = _flag(request.data.get('dry_run', False))
+        force = _flag(request.data.get('force', False))
+
+        plan, not_found, errors, seen = [], [], [], set()
+        unchanged = 0
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append({'index': i, 'error': 'item must be an object'})
+                continue
+            try:
+                stock = int(item.get('stock'))
+            except (TypeError, ValueError):
+                errors.append({'index': i, 'error': '"stock" must be a whole number'})
+                continue
+            if stock < 0:
+                errors.append({'index': i, 'error': '"stock" cannot be negative'})
+                continue
+
+            qs = ProductVariant.objects.select_related('product')
+            variant = None
+            if item.get('id') not in (None, ''):
+                try:
+                    variant = qs.filter(id=int(item['id'])).first()
+                except (TypeError, ValueError):
+                    errors.append({'index': i, 'error': '"id" must be a number'})
+                    continue
+            else:
+                sku = str(item.get('product_sku') or '').strip()
+                if sku:
+                    variant = qs.filter(
+                        product__sku=sku,
+                        processor=str(item.get('processor') or '').strip(),
+                        ram=str(item.get('ram') or '').strip(),
+                        storage=str(item.get('storage') or '').strip(),
+                    ).first()
+            if variant is None:
+                not_found.append({'index': i, **{k: item.get(k) for k in ('id', 'product_sku', 'processor', 'ram', 'storage') if item.get(k) not in (None, '')}})
+                continue
+
+            if variant.id in seen:
+                errors.append({'index': i, 'id': variant.id, 'error': 'same variant listed twice; only the first row was used'})
+                continue
+            seen.add(variant.id)
+
+            if variant.stock == stock:
+                unchanged += 1
+                continue
+            plan.append((variant, stock))
+
+        in_stock = ProductVariant.objects.filter(stock__gt=0).count()
+        selling_out = sum(1 for v, s in plan if s == 0 and v.stock > 0)
+        if (not force and selling_out >= self.MASS_SELLOUT_MIN
+                and selling_out > self.MASS_SELLOUT_SHARE * max(in_stock, 1)):
+            return Response({
+                'error': f'This sync would mark {selling_out} of {in_stock} in-stock variants as sold out. '
+                         'Nothing was saved. Check the stock list, or send "force": true if it is correct.',
+            }, status=status.HTTP_409_CONFLICT)
+
+        changed = []
+        with transaction.atomic():
+            for variant, stock in plan:
+                old = variant.stock
+                if not dry_run:
+                    variant.stock = stock
+                    variant.save(update_fields=['stock'])
+                changed.append({'id': variant.id, 'product_sku': variant.product.sku, 'old': old, 'new': stock})
+        logging.getLogger('orders.services').info(
+            f"[StockSync] dry_run={dry_run} changed={len(changed)} unchanged={unchanged} "
+            f"not_found={len(not_found)} errors={len(errors)}"
+        )
+
+        return Response({
+            'dry_run': dry_run,
+            'changed': changed,
+            'unchanged': unchanged,
+            'not_found': not_found,
+            'errors': errors,
+        })
+
+
+class StockSyncOrdersView(APIView):
+    """
+    Website orders for the shop's stock app, so online sales and cancellations
+    get recorded there before the next stock push. Read-only.
+
+    GET /api/store/stock-sync/orders/?since=<ISO datetime>
+    Header: X-Stock-Sync-Token
+
+    Returns orders changed after `since` (oldest first, max 200) that took stock
+    (payment_status Paid / Deposit Paid) or are Cancelled, plus `next_since`
+    to pass on the next call.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    LIMIT = 200
+
+    def get(self, request):
+        from datetime import timezone as dt_timezone
+        from django.utils.dateparse import parse_datetime
+        from orders.models import Order
+
+        denied = _stock_sync_denied(request)
+        if denied:
+            return denied
+
+        raw = request.query_params.get('since', '')
+        since = parse_datetime(raw) if raw else None
+        if raw and since is None:
+            return Response({'error': '"since" must be an ISO date-time'}, status=status.HTTP_400_BAD_REQUEST)
+        if since is not None and timezone.is_naive(since):
+            since = timezone.make_aware(since, dt_timezone.utc)
+
+        qs = Order.objects.filter(
+            Q(payment_status__in=['Paid', 'Deposit Paid']) | Q(order_status='Cancelled')
+        )
+        if since is not None:
+            qs = qs.filter(updated_at__gt=since)
+        orders = list(qs.order_by('updated_at', 'id').prefetch_related('items__variant__product')[:self.LIMIT])
+
+        data = []
+        for o in orders:
+            data.append({
+                'id': o.id,
+                'created_at': o.created_at.isoformat(),
+                'updated_at': o.updated_at.isoformat(),
+                'order_status': o.order_status,
+                'payment_status': o.payment_status,
+                'payment_method': o.payment_method,
+                'name': f"{o.first_name} {o.last_name}".strip(),
+                'phone': o.phone,
+                'city': o.city,
+                'total_amount': str(o.total_amount),
+                'items': [{
+                    'item_id': it.id,
+                    'variant_id': it.variant_id,
+                    'product_sku': it.variant.product.sku if it.variant and it.variant.product else '',
+                    'product_name': it.product_name,
+                    'variant_label': it.variant_label,
+                    'quantity': it.quantity,
+                    'price': str(it.price),
+                    'serial_number': it.serial_number,
+                } for it in o.items.all()],
+            })
+        return Response({
+            'orders': data,
+            'next_since': orders[-1].updated_at.isoformat() if orders else (since.isoformat() if since else timezone.now().isoformat()),
+            'more': len(orders) == self.LIMIT,
+        })
