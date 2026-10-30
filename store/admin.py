@@ -211,6 +211,10 @@ class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
         ("Content", {
             "fields": ("description", "highlights")
         }),
+        ("Video of this unit", {
+            "fields": ("video_url", "video"),
+            "description": "A short video of the actual laptop builds trust. Paste a YouTube link, or upload an MP4.",
+        }),
         ("Refurbishment & Warranty", {
             "fields": (
                 "refurbishment_summary", "refurbishment_points",
@@ -247,7 +251,12 @@ class ReviewAdmin(admin.ModelAdmin):
 
 @admin.register(SiteConfig)
 class SiteConfigAdmin(admin.ModelAdmin):
-    list_display = ("shipping_fee", "whatsapp_number")
+    list_display = ("shipping_fee", "whatsapp_number", "alert_whatsapp_numbers")
+    fieldsets = (
+        ("Shipping & payment", {"fields": ("shipping_fee", "free_shipping_threshold", "cod_surcharge_percentage", "tax_percentage")}),
+        ("WhatsApp", {"fields": ("whatsapp_number", "alert_whatsapp_numbers", "low_stock_threshold")}),
+        ("Product pages", {"fields": ("in_the_box",)}),
+    )
 
     def has_add_permission(self, request):
         return SiteConfig.objects.count() == 0
@@ -258,7 +267,8 @@ class SiteConfigAdmin(admin.ModelAdmin):
 
 @admin.register(Coupon)
 class CouponAdmin(admin.ModelAdmin):
-    list_display = ("code", "discount_type", "value", "active", "valid_to", "uses_count")
-    list_filter = ("active", "discount_type")
+    list_display = ("code", "description", "discount_type", "value", "min_order_value", "is_public", "first_order_only", "active", "valid_to", "uses_count")
+    list_editable = ("is_public", "active")
+    list_filter = ("active", "is_public", "first_order_only", "discount_type")
     search_fields = ("code",)
     readonly_fields = ("uses_count",)

@@ -38,6 +38,7 @@ class OrderItemInline(admin.TabularInline):
     model         = OrderItem
     extra         = 0
     readonly_fields = ['product_name', 'variant_label', 'price', 'quantity', 'image_preview']
+    fields = ['image_preview', 'product_name', 'variant_label', 'price', 'quantity', 'serial_number']
 
     def image_preview(self, obj):
         if obj.image_url:

@@ -10,7 +10,13 @@ load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    'api.yuvacomputers.in',
+    'admin.yuvacomputers.in',
+    'yuvacomputers.in', # Add this
+    'www.yuvacomputers.in', # Add this
+    '103.138.96.2'
+]
 SIMPLE_JWT = {
     'LEEWAY': 60, 
 }
@@ -44,6 +50,7 @@ INSTALLED_APPS = [
     'payments',
     'content',
     'mails',
+    'engage',
 ]
 
 SITE_ID = 1
@@ -82,10 +89,11 @@ WSGI_APPLICATION = 'core.wsgi.application'
 
 
 DATABASES = {
-     'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
+      'default': dj_database_url.config(
+           default=os.environ.get('DATABASE_URL'),
+           conn_max_age=600,
+           ssl_require=False 
+    )
 }
 	
 AUTH_USER_MODEL = 'accounts.CustomUser'
@@ -106,9 +114,6 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
-    # One storefront page view makes 8-10 API calls, and visitors on shared
-    # networks (offices, colleges, mobile carriers) share an IP, so the limit
-    # must allow a few hundred page views per IP per hour.
     'DEFAULT_THROTTLE_RATES': {
         'anon': '3000/hour',
         'user': '5000/hour',
@@ -150,23 +155,22 @@ SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 
 # --- CORS ---
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "https://yuvacomputers.in",
+    "https://www.yuvacomputers.in",
+    "https://api.yuvacomputers.in",
+    "https://admin.yuvacomputers.in",
     "http://localhost:5173",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
 ]
 
 
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
+    "https://yuvacomputers.in",
+    "https://www.yuvacomputers.in",
+    "https://api.yuvacomputers.in",
+    "https://admin.yuvacomputers.in",
 ]
-
 SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin-allow-popups"
 
 # --- STATIC & MEDIA ---
@@ -226,14 +230,15 @@ if not DEBUG:
     # Proxy Headers for Nginx
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     USE_X_FORWARDED_HOST = True
+
 DELHIVERY_API_TOKEN = os.environ.get('DELHIVERY_API_TOKEN', '')
 DELHIVERY_API_URL   = os.environ.get('DELHIVERY_API_URL', 'https://track.delhivery.com')
+DELHIVERY_PICKUP_LOCATION = os.environ.get('DELHIVERY_PICKUP_LOCATION', '')
 
-# Go to the bottom of settings.py where your WA keys are, and add WA_API_URL:
 WA_PHONE_NUMBER_ID = os.environ.get('WA_PHONE_NUMBER_ID', '')
 WA_ACCESS_TOKEN    = os.environ.get('WA_ACCESS_TOKEN', '')
 WA_TEMPLATE_NAME   = os.environ.get('WA_TEMPLATE_NAME', 'order_placed')
-WA_API_URL         = os.environ.get('WA_API_URL', 'https://live-mt-server.wati.io/308273') # ◄ Add this line
+WA_API_URL         = os.environ.get('WA_API_URL', 'https://live-mt-server.wati.io/308273')
 
 # WhatsApp templates for each order stage (WATI, account 308273 / +91 97098 88456).
 # Set a variable to an empty string to switch that message off.
@@ -244,6 +249,18 @@ WA_TEMPLATE_ORDER_DELIVERED  = os.environ.get('WA_TEMPLATE_ORDER_DELIVERED', 'or
 WA_TEMPLATE_ORDER_CANCELLED  = os.environ.get('WA_TEMPLATE_ORDER_CANCELLED', 'order_cancelled')
 
 SITE_URL = os.environ.get('SITE_URL', 'https://www.yuvacomputers.in')
+
+# Non-order WhatsApp templates (engage app). Empty string = switched off.
+WA_TEMPLATE_BACK_IN_STOCK = os.environ.get('WA_TEMPLATE_BACK_IN_STOCK', 'back_in_stock')
+WA_TEMPLATE_CART_REMINDER = os.environ.get('WA_TEMPLATE_CART_REMINDER', 'cart_reminder')
+WA_TEMPLATE_LOW_STOCK     = os.environ.get('WA_TEMPLATE_LOW_STOCK', 'low_stock_alert')
+WA_TEMPLATE_DAILY_SUMMARY = os.environ.get('WA_TEMPLATE_DAILY_SUMMARY', 'daily_summary')
+WA_TEMPLATE_NEW_LEAD      = os.environ.get('WA_TEMPLATE_NEW_LEAD', 'new_lead')
+WA_TEMPLATE_RETURN_UPDATE = os.environ.get('WA_TEMPLATE_RETURN_UPDATE', 'return_update')
+
+# Google reviews on the home page (Google Cloud → Places API (New)).
+GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+GOOGLE_PLACE_ID       = os.environ.get('GOOGLE_PLACE_ID', '')
 
 # Where Delhivery sends returned (RTO) parcels.
 DELHIVERY_RETURN_ADDRESS = {
@@ -287,5 +304,3 @@ LOGGING = {
         },
     },
 }
-
-DELHIVERY_PICKUP_LOCATION = os.environ.get('DELHIVERY_PICKUP_LOCATION', '')
