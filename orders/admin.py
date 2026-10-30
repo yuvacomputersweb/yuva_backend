@@ -210,7 +210,27 @@ class OrderAdmin(admin.ModelAdmin):
             if not obj.delivered_at:
                 obj.delivered_at = timezone.now()
 
+        # Payment marked as received by hand (e.g. Razorpay captured it but the
+        # customer's page closed): treat it exactly like a real payment.
+        paid = ('Paid', 'Deposit Paid')
+        marked_paid = (change and 'payment_status' in form.changed_data
+                       and obj.payment_status in paid and form.initial.get('payment_status') not in paid)
+        if marked_paid and obj.order_status == 'Pending':
+            obj.order_status = 'Processing'
+
         super().save_model(request, obj, form, change)
+
+        if marked_paid:
+            from payments.confirm import take_order_stock, trigger_logistics
+            take_order_stock(obj)
+            trigger_logistics(obj)
+            obj.refresh_from_db()
+            self.message_user(request, (
+                f"Payment recorded: stock taken, "
+                + (f"Delhivery waybill {obj.delhivery_waybill}" if obj.delhivery_waybill else "⚠️ Delhivery shipment not created — check the logs")
+                + (", WhatsApp sent." if obj.whatsapp_sent else ", ⚠️ WhatsApp not sent — see the messages list below.")
+            ))
+            return
 
         # Trigger logistics for COD when admin confirms or ships
         cod_trigger_statuses = ('Confirmed', 'Shipped')
