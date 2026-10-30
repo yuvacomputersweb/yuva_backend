@@ -125,6 +125,20 @@ class Product(models.Model):
         help_text="Or upload a short MP4 (under 20 MB). Used only when there is no video link."
     )
 
+    # ── Stock ──
+    STOCK_MODE_CHOICES = [
+        ('model', 'One stock for the model — RAM/SSD upgraded to order'),
+        ('variant', 'Separate stock per configuration (e.g. MacBooks)'),
+    ]
+    stock_mode = models.CharField(
+        max_length=10, choices=STOCK_MODE_CHOICES, default='model',
+        help_text="Windows laptops: one count for the model, any RAM/SSD option can be sold from it. "
+                  "MacBooks can't be upgraded, so each configuration has its own count."
+    )
+    stock = models.PositiveIntegerField(
+        default=0, help_text="Units of this model on hand. Used when stock mode is 'One stock for the model'."
+    )
+
     is_new_arrival = models.BooleanField(default=False)
     is_best_seller = models.BooleanField(default=False)
     is_trending = models.BooleanField(default=False)
@@ -161,6 +175,44 @@ class ProductVariant(models.Model):
         max_digits=10, decimal_places=2, default=0.00,
         help_text="Extra amount added to base price for this variant"
     )
+
+    # ── Stock helpers: the right counter depends on the product's stock mode ──
+
+    @property
+    def shares_model_stock(self) -> bool:
+        return self.product.stock_mode == 'model'
+
+    @property
+    def available(self) -> int:
+        """Units that can be sold in this configuration."""
+        return self.product.stock if self.shares_model_stock else self.stock
+
+    def _locked_stock_owner(self):
+        """The live, row-locked object holding this configuration's count.
+        Re-read so two lines of the same model in one order can't overwrite
+        each other. Call inside a transaction."""
+        if self.shares_model_stock:
+            return Product.objects.select_for_update().get(pk=self.product_id)
+        return ProductVariant.objects.select_for_update().get(pk=self.pk)
+
+    def take_stock(self, quantity: int) -> bool:
+        """Remove sold units. Saves with save() so stock alerts run. False if not enough."""
+        from django.db import transaction
+        with transaction.atomic():
+            owner = self._locked_stock_owner()
+            if owner.stock < quantity:
+                return False
+            owner.stock -= quantity
+            owner.save(update_fields=['stock'])
+        return True
+
+    def return_stock(self, quantity: int) -> None:
+        """Put units back (cancellation)."""
+        from django.db import transaction
+        with transaction.atomic():
+            owner = self._locked_stock_owner()
+            owner.stock += quantity
+            owner.save(update_fields=['stock'])
 
     def __str__(self):
         parts = [self.product.sku]

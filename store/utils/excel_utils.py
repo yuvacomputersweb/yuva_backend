@@ -236,6 +236,8 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
         "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE", "TRUE/FALSE",
         "Comma-separated usage tag slugs e.g. gaming,coding",
         "Comma or newline separated image URLs (Drive links OK). First = primary",
+        "model = one count for the model (RAM/SSD upgraded to order); variant = count per configuration (MacBooks)",
+        "Units of this model on hand (stock_mode = model)",
     ]
     headers = [
         "id", "title", "slug", "sku",
@@ -249,6 +251,7 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
         "service_centers", "warranty_period", "return_policy",
         "is_new_arrival", "is_best_seller", "is_trending", "is_best_deal", "is_active",
         "usage_tag_slugs", "image_urls",
+        "stock_mode", "stock",
     ]
     ws.append(help_row)
     ws.append(headers)
@@ -277,6 +280,7 @@ def _build_products_sheet(ws: Worksheet, products) -> None:
             str(p.is_trending), str(p.is_best_deal), str(p.is_active),
             usage_slugs,
             image_urls,
+            p.stock_mode, p.stock,
         ])
         _style_data_row(ws, idx, len(headers), alt=(idx % 2 == 0))
     _freeze_and_fit(ws)
@@ -667,6 +671,15 @@ def import_from_excel(file_obj) -> ExcelImportResult:
                 is_best_deal=_bool(row.get("is_best_deal", False)),
                 is_active=_bool(row.get("is_active", True)),
             )
+            # Stock columns are optional: leave the current values when blank.
+            mode = _str(row.get("stock_mode")).lower()
+            if mode in ("model", "variant"):
+                defaults["stock_mode"] = mode
+            if _str(row.get("stock")):
+                try:
+                    defaults["stock"] = max(int(float(_str(row.get("stock")))), 0)
+                except ValueError:
+                    result.add_error(f"[Products] sku='{sku}': stock must be a number")
 
             rid = row.get("id")
             if rid:

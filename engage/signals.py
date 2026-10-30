@@ -6,7 +6,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 from orders.models import ReturnRequest
-from store.models import ProductVariant, SiteConfig
+from store.models import Product, ProductVariant, SiteConfig
 
 from .models import StockAlert, TradeInRequest
 from .whatsapp import alert_owner, send, site_url
@@ -21,28 +21,56 @@ def _remember_stock(sender, instance, **kwargs):
     )
 
 
-def notify_back_in_stock(variant):
-    alerts = StockAlert.objects.filter(product=variant.product, notified_at__isnull=True).filter(
-        Q(variant=variant) | Q(variant__isnull=True)
-    )
-    link = site_url(f'/product/{variant.product.slug}')
+def notify_back_in_stock(variant=None, product=None):
+    """Variant restocked (per-configuration products), or the model restocked (all its alerts)."""
+    product = product or variant.product
+    alerts = StockAlert.objects.filter(product=product, notified_at__isnull=True)
+    if variant is not None:
+        alerts = alerts.filter(Q(variant=variant) | Q(variant__isnull=True))
+    link = site_url(f'/product/{product.slug}')
     for alert in alerts:
-        send('back_in_stock', alert.phone, {'product_name': variant.product.title, 'product_link': link})
+        send('back_in_stock', alert.phone, {'product_name': product.title, 'product_link': link})
         alert.notified_at = timezone.now()
         alert.save(update_fields=['notified_at'])
 
 
+def _low_stock_threshold() -> int:
+    config = SiteConfig.objects.first()
+    return getattr(config, 'low_stock_threshold', 1)
+
+
+@receiver(pre_save, sender=Product)
+def _remember_model_stock(sender, instance, **kwargs):
+    instance._previous_stock = (
+        sender.objects.filter(pk=instance.pk).values_list('stock', flat=True).first() if instance.pk else None
+    )
+
+
+@receiver(post_save, sender=Product)
+def _model_stock_changed(sender, instance, created, **kwargs):
+    """Shared model stock (Windows laptops): alerts follow the model's count."""
+    if instance.stock_mode != 'model':
+        return
+    old = getattr(instance, '_previous_stock', None)
+    new = instance.stock
+    if old == 0 and new > 0:
+        transaction.on_commit(lambda: notify_back_in_stock(product=instance))
+    if old is not None and new < old and new <= _low_stock_threshold():
+        params = {'product_name': instance.title, 'stock_left': str(new)}
+        transaction.on_commit(lambda: alert_owner('low_stock', params))
+
+
 @receiver(post_save, sender=ProductVariant)
 def _stock_changed(sender, instance, created, **kwargs):
+    if instance.product.stock_mode == 'model':
+        return  # this configuration's own counter isn't used
     old = getattr(instance, '_previous_stock', None)
     new = instance.stock
 
     if (old == 0 or (created and new > 0)) and new > 0:
         transaction.on_commit(lambda: notify_back_in_stock(instance))
 
-    config = SiteConfig.objects.first()
-    threshold = getattr(config, 'low_stock_threshold', 1)
-    if old is not None and new < old and new <= threshold:
+    if old is not None and new < old and new <= _low_stock_threshold():
         label = ' / '.join(x for x in [instance.processor, instance.ram, instance.storage] if x)
         params = {
             'product_name': f"{instance.product.title} ({label})" if label else instance.product.title,

@@ -43,6 +43,9 @@ class ProductImageSerializer(serializers.ModelSerializer):
 
 class ProductVariantSerializer(serializers.ModelSerializer):
     final_price = serializers.SerializerMethodField()
+    # Units sellable in this configuration: the model's shared count, or the
+    # configuration's own count for per-configuration products (MacBooks).
+    stock = serializers.IntegerField(source='available', read_only=True)
     final_original_price = serializers.SerializerMethodField()
 
     class Meta:
@@ -97,6 +100,8 @@ class ProductListSerializer(serializers.ModelSerializer):
     review_count = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
     discount_percentage = serializers.SerializerMethodField()
+    stock = serializers.SerializerMethodField()
+    in_stock = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -110,7 +115,16 @@ class ProductListSerializer(serializers.ModelSerializer):
             'usage_tags', 'images', 'variants',
             'is_new_arrival', 'is_best_seller', 'is_trending', 'is_best_deal',
             'review_count', 'average_rating',
+            'stock_mode', 'stock', 'in_stock',
         ]
+
+    def get_stock(self, obj):
+        if obj.stock_mode == 'model':
+            return obj.stock
+        return sum(v.stock for v in obj.variants.all())
+
+    def get_in_stock(self, obj):
+        return self.get_stock(obj) > 0
 
     def get_review_count(self, obj):
         return obj.reviews.count()

@@ -92,6 +92,7 @@ class CheckoutView(APIView):
                 # ── 2. Validate cart & build line items ───────────────────────
                 order_line_items = []
                 subtotal         = Decimal('0.00')
+                wanted           = {}   # stock owner -> units in this cart
 
                 for item in cart_items:
                     variant_id = item.get('variant_id')
@@ -104,9 +105,14 @@ class CheckoutView(APIView):
                         server_price  = product.price + variant.price_override
                         parts         = [p for p in [variant.processor, variant.ram, variant.storage] if p]
                         variant_label = ' / '.join(parts)
-                        if variant.stock < quantity:
+                        # Windows laptops share one count per model (RAM/SSD are
+                        # upgraded to order), so add up every line of the model.
+                        key = ('product', product.id) if variant.shares_model_stock else ('variant', variant.id)
+                        wanted[key] = wanted.get(key, 0) + quantity
+                        if variant.available < wanted[key]:
                             return Response(
-                                {'error': f'Insufficient stock for {product.title} ({variant_label})'},
+                                {'error': f'Only {variant.available} left of {product.title}'
+                                          + ('' if variant.shares_model_stock else f' ({variant_label})')},
                                 status=status.HTTP_400_BAD_REQUEST
                             )
                     else:
@@ -373,10 +379,9 @@ class CancelOrderView(APIView):
             )
 
         # Restore stock
-        for item in order.items.select_related('variant').all():
+        for item in order.items.select_related('variant__product').all():
             if item.variant:
-                item.variant.stock += item.quantity
-                item.variant.save()
+                item.variant.return_stock(item.quantity)
 
         refund_initiated = False
         refund_amount    = Decimal('0.00')
