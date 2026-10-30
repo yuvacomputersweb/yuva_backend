@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import Order, OrderItem, OrderNotification, ReturnRequest, ExchangeCode
+from .models import Order, OrderItem, ReturnRequest, ExchangeCode
 import csv
 
 
@@ -46,59 +46,6 @@ class OrderItemInline(admin.TabularInline):
     image_preview.short_description = "Image"
 
 
-class OrderNotificationInline(admin.TabularInline):
-    model = OrderNotification
-    extra = 0
-    can_delete = False
-    fields = ['created_at', 'event', 'template', 'phone', 'success', 'response']
-    readonly_fields = fields
-    verbose_name_plural = "WhatsApp messages sent"
-
-    def has_add_permission(self, request, obj=None):
-        return False
-
-
-@admin.action(description="🚚 Sync Delhivery status now (and notify customer)")
-def sync_delhivery_action(modeladmin, request, queryset):
-    from .tracking import sync_order
-    done, skipped = 0, 0
-    for order in queryset:
-        if not order.delhivery_waybill:
-            skipped += 1
-            continue
-        stage = sync_order(order)
-        if stage:
-            done += 1
-        else:
-            skipped += 1
-    modeladmin.message_user(request, f"Synced {done} order(s); {skipped} skipped (no waybill or Delhivery unreachable).")
-
-
-@admin.action(description="💬 Resend WhatsApp message for current status")
-def resend_whatsapp_action(modeladmin, request, queryset):
-    from .notifications import notify
-    status_event = {
-        'Pending': 'order_placed', 'Processing': 'order_placed', 'Confirmed': 'order_placed',
-        'Shipped': 'order_shipped', 'Delivered': 'order_delivered', 'Cancelled': 'order_cancelled',
-    }
-    sent = sum(1 for o in queryset if notify(o, status_event.get(o.order_status, 'order_placed'), force=True))
-    modeladmin.message_user(request, f"WhatsApp sent for {sent} of {queryset.count()} order(s). See each order's message log.")
-
-
-@admin.action(description="📦 Create Delhivery shipment (if missing)")
-def create_shipment_action(modeladmin, request, queryset):
-    from .services import create_delhivery_order
-    created = []
-    for order in queryset.filter(delhivery_waybill__isnull=True) | queryset.filter(delhivery_waybill=""):
-        waybill = create_delhivery_order(order)
-        if waybill:
-            order.delhivery_waybill = waybill
-            order.tracking_link = f"https://www.delhivery.com/track-v2/package/{waybill}"
-            order.save(update_fields=["delhivery_waybill", "tracking_link"])
-            created.append(f"#{order.id}→{waybill}")
-    modeladmin.message_user(request, f"Created: {', '.join(created) or 'none (check server logs)'}")
-
-
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     list_display = [
@@ -123,8 +70,8 @@ class OrderAdmin(admin.ModelAdmin):
         # COD fields are system-computed at checkout — never edited in admin
         'advance_amount', 'collectible_cod_amount', 'is_partial_cod',
     ]
-    actions       = [export_to_csv, sync_delhivery_action, resend_whatsapp_action, create_shipment_action]
-    inlines       = [OrderItemInline, OrderNotificationInline]
+    actions       = [export_to_csv]
+    inlines       = [OrderItemInline]
     list_per_page = 25
 
     fieldsets = (

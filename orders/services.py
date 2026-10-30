@@ -24,7 +24,21 @@ logger = logging.getLogger(__name__)
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-from .notifications import format_wati_phone as _format_e164  # noqa: F401  (old name)
+def _format_e164(phone: str) -> str:
+    """
+    Convert to WATI-compatible format: 91XXXXXXXXXX (no + sign, no spaces).
+    """
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("+"):
+        phone = phone[1:]
+    if phone.startswith("91") and len(phone) == 12:
+        return phone
+    if phone.startswith("0") and len(phone) == 11:
+        return f"91{phone[1:]}"
+    if len(phone) == 10:
+        return f"91{phone}"
+    logger.warning(f"[PhoneFormat] Unexpected format: '{phone}' — prefixing 91")
+    return f"91{phone}"
 
 
 # ─── MAIN ORCHESTRATOR ───────────────────────────────────────────────────────
@@ -51,17 +65,20 @@ def process_order_logistics_and_notification(order) -> None:
     else:
         logger.info(f"[Delhivery] Order #{order.id} already has waybill '{order.delhivery_waybill}' — skipping")
 
-    # ── WhatsApp "order placed" (logged + de-duplicated in OrderNotification)
+    # ── WhatsApp notification
     if not order.whatsapp_sent:
-        from .notifications import notify
-        notify(order, "order_placed")
+        try:
+            sent = send_whatsapp_order_placed_msg(order)
+            if sent:
+                order.whatsapp_sent = True
+                order.save(update_fields=["whatsapp_sent"])
+                logger.info(f"[WhatsApp] Order #{order.id} → message sent")
+            else:
+                logger.warning(f"[WhatsApp] Order #{order.id} → message NOT sent")
+        except Exception as exc:
+            logger.error(f"[WhatsApp] Order #{order.id} failed: {exc}", exc_info=True)
     else:
         logger.info(f"[WhatsApp] Order #{order.id} already notified — skipping")
-
-    # Delhivery now has a waybill: give the customer a tracking link right away.
-    if order.delhivery_waybill and not order.tracking_link:
-        order.tracking_link = f"https://www.delhivery.com/track-v2/package/{order.delhivery_waybill}"
-        order.save(update_fields=["tracking_link"])
 
 
 # ─── DELHIVERY ───────────────────────────────────────────────────────────────
@@ -88,11 +105,6 @@ def create_delhivery_order(order) -> str | None:
     if not pickup_loc:
         logger.error("[Delhivery] DELHIVERY_PICKUP_LOCATION not configured")
         return None
-
-    ret = getattr(settings, "DELHIVERY_RETURN_ADDRESS", {
-        "address": "Sai Towers, 204, 2nd Floor, Metro Pillar No. 1519, Dilsukhnagar",
-        "city": "Hyderabad", "state": "Telangana", "pin": "500060", "phone": "9709888456",
-    })
 
     total_qty    = sum(item.quantity for item in order.items.all())
     is_cod       = order.payment_method == "COD"
@@ -126,15 +138,14 @@ def create_delhivery_order(order) -> str | None:
                 "weight":          500 * total_qty,      # 500g/item — update per client
                 "quantity":        total_qty,
                 "seller_name":     "Yuva Computers",
-                "seller_add":      ret["address"],
+                "seller_add":      "Hyderabad, Telangana",
                 "seller_inv":      str(order.id),
-                # Returns (RTO) come back to the store — set in settings / env.
-                "return_pin":      ret["pin"],
-                "return_city":     ret["city"],
-                "return_phone":    ret["phone"],
+                "return_pin":      "500001",
+                "return_city":     "Hyderabad",
+                "return_phone":    "9100000000",
                 "return_name":     "Yuva Computers",
-                "return_add":      ret["address"],
-                "return_state":    ret["state"],
+                "return_add":      "Yuva Computers, Hyderabad",
+                "return_state":    "Telangana",
                 "return_country":  "India",
             }
         ],
@@ -185,6 +196,63 @@ def create_delhivery_order(order) -> str | None:
 # ─── WHATSAPP (WATI) ─────────────────────────────────────────────────────────
 
 def send_whatsapp_order_placed_msg(order) -> bool:
-    """Kept for compatibility — use orders.notifications.notify()."""
-    from .notifications import notify
-    return notify(order, "order_placed")
+    """
+    Send 'Order Placed' via WATI.
+    whatsappNumber goes in the query string, not the JSON body.
+    """
+    access_token  = getattr(settings, "WA_ACCESS_TOKEN", "")
+    template_name = getattr(settings, "WA_TEMPLATE_NAME", "order_placed")
+    base_api_url  = getattr(settings, "WA_API_URL", "https://live-mt-server.wati.io/308273")
+
+    if not access_token:
+        logger.error("[WhatsApp] WA_ACCESS_TOKEN not configured")
+        return False
+    if not order.phone:
+        logger.error(f"[WhatsApp] Order #{order.id} has no phone number")
+        return False
+
+    recipient_phone = _format_e164(order.phone)
+    first_name      = (order.first_name or "Customer").strip()
+    order_id        = str(order.id)
+    total_amount    = f"Rs. {float(order.total_amount):,.2f}"
+
+    url     = f"{base_api_url.rstrip('/')}/api/v1/sendTemplateMessage"
+    params  = {"whatsappNumber": recipient_phone}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
+    payload = {
+        "template_name":  template_name,
+        "broadcast_name": f"Order_{order_id}",
+        "parameters": [
+            {"name": "name",         "value": first_name},
+            {"name": "order_number", "value": order_id},
+            {"name": "total_price",  "value": total_amount},
+        ],
+    }
+
+    logger.info(f"[WhatsApp] → {recipient_phone} | Order #{order_id}")
+
+    try:
+        response = requests.post(url, params=params, json=payload, headers=headers, timeout=25)
+        logger.info(f"[WhatsApp] HTTP {response.status_code}: {response.text}")
+
+        if response.status_code not in (200, 201):
+            logger.error(f"[WhatsApp] Failed HTTP {response.status_code}: {response.text[:500]}")
+            return False
+
+        result = response.json()
+        if result.get("result") is True or result.get("result") == "success":
+            return True
+
+        logger.error(f"[WhatsApp] Unexpected response: {result}")
+        return False
+
+    except requests.exceptions.Timeout:
+        logger.error(f"[WhatsApp] Order #{order.id} — request timed out")
+        return False
+    except Exception as exc:
+        logger.error(f"[WhatsApp] Order #{order.id} — exception: {exc}", exc_info=True)
+        return False
