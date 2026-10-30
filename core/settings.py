@@ -194,6 +194,8 @@ DEFAULT_FROM_EMAIL = f"Yuva Computers <{EMAIL_HOST_USER}>"
 # --- RAZORPAY ---
 RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID')
 RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET')
+# Razorpay Dashboard → Webhooks: confirms payments even if the customer closes the page.
+RAZORPAY_WEBHOOK_SECRET = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
 
 # --- TIMEZONE ---
 TIME_ZONE = 'Asia/Kolkata'

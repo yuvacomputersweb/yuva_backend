@@ -17,18 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def _trigger_logistics(order) -> None:
-    """
-    Safe wrapper — catches ALL exceptions so third-party failures
-    never block payment confirmation responses.
-    """
-    try:
-        from orders.services import process_order_logistics_and_notification
-        process_order_logistics_and_notification(order)
-    except Exception as exc:
-        logger.error(
-            f"[Payments] Logistics trigger failed for Order #{order.id}: {exc}",
-            exc_info=True,
-        )
+    from .confirm import trigger_logistics
+    trigger_logistics(order)
 
 
 class VerifyPaymentView(APIView):
@@ -144,20 +134,11 @@ class RazorpayWebhookView(APIView):
         try:
             order = Order.objects.get(razorpay_order_id=rzp_order_id)
 
-            if event == 'payment.captured' and order.payment_status not in ('Paid', 'Deposit Paid'):
-                # Deduct stock
-                for item in order.items.select_related('variant__product').all():
-                    if item.variant:
-                        item.variant.take_stock(item.quantity)
+            if event == 'payment.captured':
+                from .confirm import confirm_paid_order
+                confirm_paid_order(order, rzp_payment_id)
 
-                order.razorpay_payment_id = rzp_payment_id
-                order.order_status        = 'Processing'
-                order.payment_status      = 'Deposit Paid' if order.is_partial_cod else 'Paid'
-                order.save()
-
-                _trigger_logistics(order)
-
-            elif event == 'payment.failed':
+            elif event == 'payment.failed' and order.payment_status not in ('Paid', 'Deposit Paid'):
                 order.payment_status = 'Failed'
                 order.save(update_fields=['payment_status'])
 
