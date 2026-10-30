@@ -2,7 +2,22 @@ from django.db import models
 
 
 class HeroSlide(models.Model):
-    image = models.ImageField(upload_to='content/hero/')
+    image = models.ImageField(
+        upload_to='content/hero/',
+        help_text="Desktop banner, 1920 × 640 px (3:1).",
+    )
+    mobile_image = models.ImageField(
+        upload_to='content/hero/', blank=True, null=True,
+        help_text="Optional phone banner, 1080 × 1080 px. Uses the desktop image if empty.",
+    )
+    title = models.CharField(
+        max_length=120, blank=True,
+        help_text="Short description of the banner (read aloud by screen readers).",
+    )
+    link = models.CharField(
+        max_length=300, blank=True,
+        help_text="Where the banner goes when tapped, e.g. /products?category=premium-laptops",
+    )
     order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
 
@@ -399,3 +414,24 @@ class Blog(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class AnnouncementBar(models.Model):
+    """The coloured strip above the header (sales, festival offers, notices)."""
+    COLORS = [('green', 'Green'), ('navy', 'Navy'), ('red', 'Red'), ('orange', 'Orange')]
+
+    title = models.CharField(max_length=60, blank=True, help_text='Bold part, e.g. "Diwali Sale"')
+    text = models.CharField(max_length=200, help_text="The message, e.g. Up to ₹8,000 off business laptops")
+    link = models.CharField(max_length=300, blank=True, help_text="Optional, e.g. /products?is_best_deal=true")
+    color = models.CharField(max_length=10, choices=COLORS, default='green')
+    starts_at = models.DateTimeField(null=True, blank=True, help_text="Leave empty to show immediately.")
+    ends_at = models.DateTimeField(null=True, blank=True, help_text="Hidden automatically after this time. A countdown shows the end date.")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-starts_at', '-id']
+        verbose_name = "Announcement bar"
+
+    def __str__(self):
+        return self.title or self.text[:40]
+

@@ -239,6 +239,25 @@ WA_ACCESS_TOKEN    = os.environ.get('WA_ACCESS_TOKEN', '')
 WA_TEMPLATE_NAME   = os.environ.get('WA_TEMPLATE_NAME', 'order_placed')
 WA_API_URL         = os.environ.get('WA_API_URL', 'https://live-mt-server.wati.io/308273')
 
+# WhatsApp templates for each order stage (WATI, account 308273 / +91 97098 88456).
+# Set a variable to an empty string to switch that message off.
+WA_TEMPLATE_PAYMENT_RECEIVED = os.environ.get('WA_TEMPLATE_PAYMENT_RECEIVED', 'payment_received')
+WA_TEMPLATE_ORDER_SHIPPED    = os.environ.get('WA_TEMPLATE_ORDER_SHIPPED', 'order_shipped')
+WA_TEMPLATE_OUT_FOR_DELIVERY = os.environ.get('WA_TEMPLATE_OUT_FOR_DELIVERY', 'out_for_delivery')
+WA_TEMPLATE_ORDER_DELIVERED  = os.environ.get('WA_TEMPLATE_ORDER_DELIVERED', 'order_delivered')
+WA_TEMPLATE_ORDER_CANCELLED  = os.environ.get('WA_TEMPLATE_ORDER_CANCELLED', 'order_cancelled')
+
+SITE_URL = os.environ.get('SITE_URL', 'https://www.yuvacomputers.in')
+
+# Where Delhivery sends returned (RTO) parcels.
+DELHIVERY_RETURN_ADDRESS = {
+    'address': os.environ.get('DELHIVERY_RETURN_ADDRESS', 'Sai Towers, 204, 2nd Floor, Metro Pillar No. 1519, Dilsukhnagar'),
+    'city': os.environ.get('DELHIVERY_RETURN_CITY', 'Hyderabad'),
+    'state': os.environ.get('DELHIVERY_RETURN_STATE', 'Telangana'),
+    'pin': os.environ.get('DELHIVERY_RETURN_PIN', '500060'),
+    'phone': os.environ.get('DELHIVERY_RETURN_PHONE', '9709888456'),
+}
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

@@ -1,8 +1,10 @@
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from .models import (
-    HeroSlide, SiteStat, HomeReview, PartnerBrand, AboutContent,
+    AnnouncementBar, HeroSlide, SiteStat, HomeReview, PartnerBrand, AboutContent,
     CompanyContent, CompanyTimeline, CompanyInvestor,
     CompanyCertification, CompanyPartner,
     BulkOrderContent, BulkOrderBenefit, BulkScalePoint, BulkInventoryItem,
@@ -10,6 +12,7 @@ from .models import (
     ContactPageContent, ContactDepartment,Blog
 )
 from .serializers import (
+    AnnouncementBarSerializer,
     HeroSlideSerializer, SiteStatSerializer, HomeReviewSerializer,
     PartnerBrandSerializer, AboutContentSerializer,
     CompanyContentSerializer, CompanyTimelineSerializer,
@@ -36,6 +39,13 @@ class HomePageContentView(APIView):
         reviews = HomeReview.objects.filter(is_active=True)
         partners = PartnerBrand.objects.filter(is_active=True)
         about = _first(AboutContent)
+        now = timezone.now()
+        announcement = (
+            AnnouncementBar.objects.filter(is_active=True)
+            .filter(Q(starts_at__isnull=True) | Q(starts_at__lte=now))
+            .filter(Q(ends_at__isnull=True) | Q(ends_at__gt=now))
+            .first()
+        )
 
         return Response({
             'hero_slides': HeroSlideSerializer(slides, many=True, context={'request': request}).data,
@@ -43,6 +53,7 @@ class HomePageContentView(APIView):
             'reviews': HomeReviewSerializer(reviews, many=True).data,
             'partners': PartnerBrandSerializer(partners, many=True).data,
             'about': AboutContentSerializer(about, context={'request': request}).data if about else None,
+            'announcement': AnnouncementBarSerializer(announcement).data if announcement else None,
         })
 
 
