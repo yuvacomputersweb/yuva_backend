@@ -455,3 +455,47 @@ class ValidateExchangeCodeView(APIView):
             })
         except ExchangeCode.DoesNotExist:
             return Response({'valid': False, 'error': 'Invalid or already used exchange code'}, status=400)
+
+class TrackOrderView(APIView):
+    """
+    Public order tracking: GET /api/orders/track/?order_id=123&phone=9876543210
+
+    The phone number must match the order (last 10 digits), so order ids
+    can't be used to look up other customers' orders.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        import re
+        from .tracking import fetch_tracking
+
+        order_id = re.sub(r"\D", "", request.query_params.get("order_id", ""))
+        phone = re.sub(r"\D", "", request.query_params.get("phone", ""))[-10:]
+        if not order_id or len(phone) != 10:
+            return Response({"error": "Enter your order number and the 10-digit phone number used at checkout."}, status=400)
+
+        order = Order.objects.prefetch_related("items").filter(pk=order_id).first()
+        if not order or re.sub(r"\D", "", order.phone or "")[-10:] != phone:
+            return Response({"error": "We couldn't find an order with that number and phone."}, status=404)
+
+        courier = fetch_tracking(order.delhivery_waybill) if order.delhivery_waybill else None
+        return Response({
+            "order_id": order.id,
+            "placed_at": order.created_at,
+            "order_status": order.order_status,
+            "payment_method": order.payment_method,
+            "payment_status": order.payment_status,
+            "total_amount": order.total_amount,
+            "amount_due_on_delivery": order.collectible_cod_amount if order.payment_method == "COD" else 0,
+            "delivered_at": order.delivered_at,
+            "city": order.city,
+            "items": [
+                {"name": i.product_name, "variant": i.variant_label, "quantity": i.quantity}
+                for i in order.items.all()
+            ],
+            "waybill": order.delhivery_waybill,
+            "tracking_link": order.tracking_link,
+            "tracking_note": order.tracking_note,
+            "courier": courier,
+        })
