@@ -12,7 +12,7 @@ with exactly these variables (see WHATSAPP_TEMPLATES.md):
 
   order_placed      {{name}} {{order_number}} {{total_price}}
   payment_received  {{name}} {{order_number}} {{amount}}
-  order_shipped     {{name}} {{order_number}} {{awb}} {{tracking_link}}
+  order_shipped     {{name}} {{order_number}} {{tracking_number}} {{tracking_url}}
   out_for_delivery  {{name}} {{order_number}} {{amount_due}}
   order_delivered   {{name}} {{order_number}}
   order_cancelled   {{name}} {{order_number}}
@@ -89,8 +89,8 @@ def build_params(order, event: str) -> dict:
         paid = order.advance_amount if order.payment_status == "Deposit Paid" else order.total_amount
         params["amount"] = _rupees(paid)
     elif event == "order_shipped":
-        params["awb"] = order.delhivery_waybill or "—"
-        params["tracking_link"] = tracking_url(order)
+        params["tracking_number"] = order.delhivery_waybill or "—"
+        params["tracking_url"] = tracking_url(order)
     elif event == "out_for_delivery":
         due = order.collectible_cod_amount if order.payment_method == "COD" else 0
         params["amount_due"] = _rupees(due) if due else "Nothing — already paid"

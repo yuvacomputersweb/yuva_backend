@@ -35,12 +35,14 @@ Thank you for shopping with Yuva Computers.
 ```
 
 ### 3. `order_shipped`
-Variables: `name`, `order_number`, `awb`, `tracking_link`
+Variables: `name`, `order_number`, `tracking_number`, `tracking_url`
 ```
-Hi {{name}}, good news! Your order #{{order_number}} has been shipped with Delhivery. 🚚
+Hi {{name}}, good news! Your order #{{order_number}} has been shipped with Delhivery.
 
-Tracking number (AWB): {{awb}}
-Track your parcel: {{tracking_link}}
+Tracking number (AWB): {{tracking_number}}
+Track your parcel: {{tracking_url}}
+
+Thank you for shopping with Yuva Computers.
 ```
 
 ### 4. `out_for_delivery`
