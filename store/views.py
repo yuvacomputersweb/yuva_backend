@@ -330,32 +330,40 @@ def _stock_sync_denied(request):
 
 class StockSyncView(APIView):
     """
-    Stock pushed from the shop's stock app. Only `stock` changes.
+    Stock pushed from the shop's stock app. Only stock counts change.
 
     POST /api/store/stock-sync/
     Header:  X-Stock-Sync-Token: <settings.STOCK_SYNC_TOKEN>
-    Body:    {"items": [{"id": 11, "stock": 4},
-                        {"product_sku": "DELL-5420", "processor": "...", "ram": "8GB", "storage": "256GB SSD", "stock": 0}],
-              "dry_run": false}
+    Body:    {"items": [{"product_sku": "DELL-5420", "stock": 3},                 # whole model
+                        {"product_sku": "MBP-M1-14", "ram": "16GB", "storage": "512GB SSD", "stock": 1},
+                        {"id": 11, "stock": 4}],                                  # a variant id
+              "dry_run": false, "force": false}
 
-    A variant is found by `id`, or by product SKU + processor + RAM + storage
-    (the same keys as the admin Excel import). Each change is saved with
-    variant.save(update_fields=["stock"]) so the engage signals still send the
-    back-in-stock and low-stock WhatsApp messages.
+    Most laptops keep one count for the model (Product.stock_mode == 'model'):
+    RAM/SSD are upgraded to order, so every configuration sells from it. Send
+    one row per model with just `product_sku` and `stock`. A row that names a
+    configuration of such a product also sets the model's count.
+
+    Products with stock_mode == 'variant' (MacBooks) keep a count per
+    configuration: send `id`, or product SKU + processor + RAM + storage (the
+    same keys as the admin Excel import).
+
+    Counts are saved with save(update_fields=["stock"]) so the back-in-stock
+    and low-stock WhatsApp messages still go out.
     """
     authentication_classes = []
     permission_classes = [AllowAny]
     MAX_ITEMS = 2000
-    # Refuse a push that would suddenly sell out at least this many variants
-    # *and* more than this share of everything in stock (likely a broken list),
-    # unless the request sends "force": true.
+    # Refuse a push that would suddenly sell out at least this many stock
+    # counts *and* more than this share of everything in stock (likely a
+    # broken list), unless the request sends "force": true.
     MASS_SELLOUT_MIN = 5
     MASS_SELLOUT_SHARE = 0.5
 
     def post(self, request):
         import logging
         from django.db import transaction
-        from .models import ProductVariant
+        from .models import Product, ProductVariant
 
         denied = _stock_sync_denied(request)
         if denied:
@@ -371,6 +379,7 @@ class StockSyncView(APIView):
 
         plan, not_found, errors, seen = [], [], [], set()
         unchanged = 0
+        variants = ProductVariant.objects.select_related('product')
         for i, item in enumerate(items):
             if not isinstance(item, dict):
                 errors.append({'index': i, 'error': 'item must be an object'})
@@ -384,59 +393,77 @@ class StockSyncView(APIView):
                 errors.append({'index': i, 'error': '"stock" cannot be negative'})
                 continue
 
-            qs = ProductVariant.objects.select_related('product')
-            variant = None
+            sku = str(item.get('product_sku') or '').strip()
+            names_config = any(str(item.get(k) or '').strip() for k in ('processor', 'ram', 'storage'))
+            target = None   # the object whose `stock` this row sets
             if item.get('id') not in (None, ''):
                 try:
-                    variant = qs.filter(id=int(item['id'])).first()
+                    variant = variants.filter(id=int(item['id'])).first()
                 except (TypeError, ValueError):
                     errors.append({'index': i, 'error': '"id" must be a number'})
                     continue
-            else:
-                sku = str(item.get('product_sku') or '').strip()
-                if sku:
-                    variant = qs.filter(
-                        product__sku=sku,
-                        processor=str(item.get('processor') or '').strip(),
-                        ram=str(item.get('ram') or '').strip(),
-                        storage=str(item.get('storage') or '').strip(),
-                    ).first()
-            if variant is None:
+                if variant:
+                    target = variant.product if variant.shares_model_stock else variant
+            elif sku and not names_config:
+                product = Product.objects.filter(sku=sku).first()
+                if product and product.stock_mode == 'variant':
+                    errors.append({'index': i, 'product_sku': sku,
+                                   'error': 'this product has a separate count per configuration; send ram and storage'})
+                    continue
+                target = product
+            elif sku:
+                variant = variants.filter(
+                    product__sku=sku,
+                    processor=str(item.get('processor') or '').strip(),
+                    ram=str(item.get('ram') or '').strip(),
+                    storage=str(item.get('storage') or '').strip(),
+                ).first()
+                if variant:
+                    target = variant.product if variant.shares_model_stock else variant
+            if target is None:
                 not_found.append({'index': i, **{k: item.get(k) for k in ('id', 'product_sku', 'processor', 'ram', 'storage') if item.get(k) not in (None, '')}})
                 continue
 
-            if variant.id in seen:
-                errors.append({'index': i, 'id': variant.id, 'error': 'same variant listed twice; only the first row was used'})
+            key = (type(target).__name__, target.pk)
+            if key in seen:
+                errors.append({'index': i, 'product_sku': sku or getattr(target, 'sku', ''),
+                               'error': 'this stock count was already set by an earlier row; only the first was used'})
                 continue
-            seen.add(variant.id)
+            seen.add(key)
 
-            if variant.stock == stock:
+            if target.stock == stock:
                 unchanged += 1
                 continue
-            plan.append((variant, stock))
+            plan.append((target, stock))
 
-        in_stock = ProductVariant.objects.filter(stock__gt=0).count()
-        selling_out = sum(1 for v, s in plan if s == 0 and v.stock > 0)
+        in_stock = (Product.objects.filter(stock_mode='model', stock__gt=0).count()
+                    + ProductVariant.objects.filter(product__stock_mode='variant', stock__gt=0).count())
+        selling_out = sum(1 for t, s in plan if s == 0 and t.stock > 0)
         if (not force and selling_out >= self.MASS_SELLOUT_MIN
                 and selling_out > self.MASS_SELLOUT_SHARE * max(in_stock, 1)):
             return Response({
-                'error': f'This sync would mark {selling_out} of {in_stock} in-stock variants as sold out. '
+                'error': f'This sync would mark {selling_out} of {in_stock} in-stock items as sold out. '
                          'Nothing was saved. Check the stock list, or send "force": true if it is correct.',
             }, status=status.HTTP_409_CONFLICT)
 
         changed = []
         with transaction.atomic():
-            for variant, stock in plan:
-                old = variant.stock
+            for target, stock in plan:
+                old = target.stock
                 if not dry_run:
-                    variant.stock = stock
-                    variant.save(update_fields=['stock'])
-                changed.append({'id': variant.id, 'product_sku': variant.product.sku, 'old': old, 'new': stock})
+                    target.stock = stock
+                    target.save(update_fields=['stock'])
+                is_model = isinstance(target, Product)
+                changed.append({
+                    'level': 'model' if is_model else 'configuration',
+                    'id': None if is_model else target.id,
+                    'product_sku': target.sku if is_model else target.product.sku,
+                    'old': old, 'new': stock,
+                })
         logging.getLogger('orders.services').info(
             f"[StockSync] dry_run={dry_run} changed={len(changed)} unchanged={unchanged} "
             f"not_found={len(not_found)} errors={len(errors)}"
         )
-
         return Response({
             'dry_run': dry_run,
             'changed': changed,

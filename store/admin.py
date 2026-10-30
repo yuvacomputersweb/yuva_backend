@@ -178,11 +178,11 @@ class ProductVariantAdmin(admin.ModelAdmin):
 class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
     list_display = (
         "sku", "title", "brand", "category", "condition",
-        "price", "is_new_arrival", "is_best_seller",
+        "price", "stock_mode", "stock", "is_new_arrival", "is_best_seller",
         "is_trending", "is_best_deal", "is_active",
     )
     list_editable = (
-        "is_new_arrival", "is_best_seller",
+        "stock", "is_new_arrival", "is_best_seller",
         "is_trending", "is_best_deal", "is_active",
     )
     list_filter = ("category", "brand", "condition", "is_active")
@@ -200,6 +200,12 @@ class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
         }),
         ("Pricing", {
             "fields": ("price", "original_price")
+        }),
+        ("Stock", {
+            "fields": ("stock_mode", "stock"),
+            "description": "Windows laptops: keep one count for the model — every RAM/SSD option sells from it, "
+                           "and the configuration rows' own stock is ignored. MacBooks: choose 'Separate stock per "
+                           "configuration' and set stock on each configuration row below.",
         }),
         ("Specifications", {
             "fields": (

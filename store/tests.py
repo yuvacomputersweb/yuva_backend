@@ -15,7 +15,9 @@ class StockSyncTests(TestCase):
         self.client = APIClient()
         brand = Brand.objects.create(name='Dell', slug='dell')
         cat = Category.objects.create(name='Laptops', slug='laptops')
-        self.product = Product.objects.create(title='Dell Latitude 5420', sku='DELL-5420', brand=brand, category=cat, price='30000')
+        # Per-configuration counts (like MacBooks); shared model stock is tested below.
+        self.product = Product.objects.create(title='Dell Latitude 5420', sku='DELL-5420', brand=brand, category=cat,
+                                              price='30000', stock_mode='variant')
         self.v1 = ProductVariant.objects.create(product=self.product, processor='Intel Core i5 11th Gen', ram='8GB', storage='256GB SSD', stock=5, price_override='0')
         self.v2 = ProductVariant.objects.create(product=self.product, processor='Intel Core i7 11th Gen', ram='16GB', storage='512GB SSD', stock=0, price_override='4000')
 
@@ -133,7 +135,8 @@ class StockSyncSafetyTests(TestCase):
         self.client = APIClient()
         brand = Brand.objects.create(name='HP', slug='hp')
         cat = Category.objects.create(name='Laptops 2', slug='laptops-2')
-        self.product = Product.objects.create(title='HP 840 G6', sku='HP-840', brand=brand, category=cat, price='25000')
+        self.product = Product.objects.create(title='HP 840 G6', sku='HP-840', brand=brand, category=cat, price='25000',
+                                              stock_mode='variant')
         self.variants = [ProductVariant.objects.create(product=self.product, processor=f'P{i}', ram='8GB',
                                                        storage='256GB SSD', stock=2, price_override='0') for i in range(6)]
 
@@ -160,4 +163,78 @@ class StockSyncSafetyTests(TestCase):
         self.assertFalse(r.data['dry_run'])
         v.refresh_from_db()
         self.assertEqual(v.stock, 3)
-        self.assertIn('twice', r.data['errors'][0]['error'])
+        self.assertIn('already set', r.data['errors'][0]['error'])
+
+
+
+@override_settings(STOCK_SYNC_TOKEN=TOKEN)
+class ModelStockTests(TestCase):
+    """Windows laptops: one count per model; RAM/SSD options all sell from it."""
+
+    def setUp(self):
+        self.client = APIClient()
+        brand = Brand.objects.create(name='Lenovo', slug='lenovo')
+        cat = Category.objects.create(name='Laptops 3', slug='laptops-3')
+        self.product = Product.objects.create(title='ThinkPad T480', sku='T480', brand=brand, category=cat,
+                                              price='22000', stock=3)
+        self.base = ProductVariant.objects.create(product=self.product, ram='8GB', storage='256GB SSD', stock=0, price_override='0')
+        self.up = ProductVariant.objects.create(product=self.product, ram='16GB', storage='512GB SSD', stock=0, price_override='7500')
+
+    def post(self, body):
+        return self.client.post(URL, body, format='json', HTTP_X_STOCK_SYNC_TOKEN=TOKEN)
+
+    def test_every_configuration_shows_the_model_count(self):
+        data = self.client.get(f'/api/store/products/{self.product.slug}/').data
+        self.assertEqual(sorted(v['stock'] for v in data['variants']), [3, 3])
+        self.assertEqual((data['stock'], data['in_stock'], data['stock_mode']), (3, True, 'model'))
+
+    def test_two_configurations_in_one_order_both_count(self):
+        # each order line loads its own copy of the product; both sales must stick
+        a = ProductVariant.objects.select_related('product').get(pk=self.base.pk)
+        b = ProductVariant.objects.select_related('product').get(pk=self.up.pk)
+        self.assertTrue(a.take_stock(1))
+        self.assertTrue(b.take_stock(1))
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 1)
+
+    def test_selling_any_configuration_uses_the_shared_count(self):
+        self.assertTrue(self.up.take_stock(2))
+        self.product.refresh_from_db(); self.base.refresh_from_db()
+        self.assertEqual(self.product.stock, 1)
+        self.assertEqual(self.base.available, 1)
+        self.assertFalse(self.base.take_stock(2))      # only 1 left
+        self.base.return_stock(1)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 2)
+
+    def test_sync_sets_the_model_count_by_sku(self):
+        r = self.post({'items': [{'product_sku': 'T480', 'stock': 7}]})
+        self.assertEqual(r.data['changed'], [{'level': 'model', 'id': None, 'product_sku': 'T480', 'old': 3, 'new': 7}])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 7)
+
+    def test_a_configuration_row_sets_the_model_count_once(self):
+        r = self.post({'items': [{'id': self.up.id, 'stock': 2}, {'id': self.base.id, 'stock': 9}]})
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 2)
+        self.assertIn('already set', r.data['errors'][0]['error'])
+
+    def test_sku_only_row_for_a_per_configuration_product_is_refused(self):
+        self.product.stock_mode = 'variant'; self.product.save()
+        r = self.post({'items': [{'product_sku': 'T480', 'stock': 2}]})
+        self.assertIn('per configuration', r.data['errors'][0]['error'])
+
+    def test_alerts_follow_the_model_count(self):
+        from unittest import mock
+        self.product.stock = 0; self.product.save()
+        with mock.patch('engage.signals.notify_back_in_stock') as back, \
+             mock.patch('engage.signals.alert_owner') as low, \
+             self.captureOnCommitCallbacks(execute=True):
+            self.post({'items': [{'product_sku': 'T480', 'stock': 4}]})      # 0 -> 4: back in stock
+            self.up.take_stock(3)                                            # 4 -> 1: low stock
+        back.assert_called_once()
+        low.assert_called_once()
+        # a configuration row's own counter no longer triggers anything
+        with mock.patch('engage.signals.notify_back_in_stock') as back2, self.captureOnCommitCallbacks(execute=True):
+            self.base.stock = 5; self.base.save()
+        back2.assert_not_called()

@@ -65,12 +65,9 @@ class VerifyPaymentView(APIView):
             return Response({'error': 'Invalid payment signature'}, status=status.HTTP_400_BAD_REQUEST)
 
         # ── Deduct stock (same logic for both COD deposit and Online full pay) ──
-        for item in order.items.select_related('variant').all():
+        for item in order.items.select_related('variant__product').all():
             if item.variant:
-                variant = item.variant
-                if variant.stock >= item.quantity:
-                    variant.stock -= item.quantity
-                    variant.save()
+                item.variant.take_stock(item.quantity)
 
         # ── Set payment and order status based on payment method ──────────────
         order.razorpay_payment_id = rzp_payment_id
@@ -149,12 +146,9 @@ class RazorpayWebhookView(APIView):
 
             if event == 'payment.captured' and order.payment_status not in ('Paid', 'Deposit Paid'):
                 # Deduct stock
-                for item in order.items.select_related('variant').all():
+                for item in order.items.select_related('variant__product').all():
                     if item.variant:
-                        variant = item.variant
-                        if variant.stock >= item.quantity:
-                            variant.stock -= item.quantity
-                            variant.save()
+                        item.variant.take_stock(item.quantity)
 
                 order.razorpay_payment_id = rzp_payment_id
                 order.order_status        = 'Processing'
