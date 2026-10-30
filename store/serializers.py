@@ -102,6 +102,7 @@ class ProductListSerializer(serializers.ModelSerializer):
     discount_percentage = serializers.SerializerMethodField()
     stock = serializers.SerializerMethodField()
     in_stock = serializers.SerializerMethodField()
+    warranty_badge = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -115,8 +116,13 @@ class ProductListSerializer(serializers.ModelSerializer):
             'usage_tags', 'images', 'variants',
             'is_new_arrival', 'is_best_seller', 'is_trending', 'is_best_deal',
             'review_count', 'average_rating',
-            'stock_mode', 'stock', 'in_stock',
+            'stock_mode', 'stock', 'in_stock', 'warranty_badge',
         ]
+
+    def get_warranty_badge(self, obj):
+        from .warranty import plan_for_product
+        plan = plan_for_product(obj, self.context)
+        return plan.badge if plan else ''
 
     def get_stock(self, obj):
         if obj.stock_mode == 'model':
@@ -151,6 +157,7 @@ class ProductDetailSerializer(ProductListSerializer):
     reviews = ReviewSerializer(many=True, read_only=True)
     highlights_list = serializers.SerializerMethodField()
     refurbishment_points_list = serializers.SerializerMethodField()
+    warranty = serializers.SerializerMethodField()
     warranty_details_list = serializers.SerializerMethodField()
 
     class Meta(ProductListSerializer.Meta):
@@ -163,8 +170,12 @@ class ProductDetailSerializer(ProductListSerializer):
             'graphics', 'operating_system', 'battery',
             'weight', 'ports', 'wifi', 'bluetooth',
             'reviews', 'service_centers', 'warranty_period', 'return_policy',
-            'video_url', 'video',
+            'video_url', 'video', 'warranty',
         ]
+
+    def get_warranty(self, obj):
+        from .warranty import plan_data, plan_for_product
+        return plan_data(plan_for_product(obj, self.context))
 
     def get_highlights_list(self, obj):
         if not obj.highlights:

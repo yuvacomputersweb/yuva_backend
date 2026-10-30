@@ -238,3 +238,73 @@ class ModelStockTests(TestCase):
         with mock.patch('engage.signals.notify_back_in_stock') as back2, self.captureOnCommitCallbacks(execute=True):
             self.base.stock = 5; self.base.save()
         back2.assert_not_called()
+
+
+class WarrantyPlanTests(TestCase):
+    """Plans come from the 0009 migration; products get one automatically."""
+
+    def setUp(self):
+        self.cat = Category.objects.create(name='Laptops W', slug='laptops-w')
+        self.mon = Category.objects.create(name='Refurbished Monitors', slug='monitors-w')
+        self.dell = Brand.objects.create(name='Dell', slug='dell-w')
+        self.apple = Brand.objects.create(name='Apple', slug='apple-w')
+
+    def make(self, title, price, brand=None, cat=None, graphics='Intel Integrated Graphics', sku=None):
+        return Product.objects.create(title=title, sku=sku or title[:20], brand=brand or self.dell,
+                                      category=cat or self.cat, price=price, graphics=graphics)
+
+    def code(self, product):
+        from store.warranty import plan_for_product
+        return plan_for_product(product).code
+
+    def test_automatic_rules(self):
+        self.assertEqual(self.code(self.make('Dell Latitude 5420 i5', '31500')), 'standard')
+        self.assertEqual(self.code(self.make('Dell OptiPlex 3020 i5', '6999')), 'basic')
+        self.assertEqual(self.code(self.make('Dell Precision 3571', '68500', graphics='NVIDIA Quadro T600 - 4GB')), 'graphics')
+        self.assertEqual(self.code(self.make('HP ProBook 445R G6 (2GB Graphics)', '20000', graphics='2GB Dedicated Graphics')), 'graphics')
+        self.assertEqual(self.code(self.make('MacBook Pro 16 M1 Pro', '79999', brand=self.apple)), 'apple')
+        self.assertEqual(self.code(self.make('Dell P2722H 27-inch Monitor', '9000', cat=self.mon, graphics='')), 'monitor')
+
+    def test_a_chosen_plan_wins(self):
+        from store.models import WarrantyPlan
+        p = self.make('Dell Latitude 3400 i5', '20000')
+        p.warranty_plan = WarrantyPlan.objects.get(code='graphics'); p.save()
+        self.assertEqual(self.code(p), 'graphics')
+
+    def test_product_api_shows_the_plan(self):
+        p = self.make('MacBook Air M1', '45000', brand=self.apple)
+        data = APIClient().get(f'/api/store/products/{p.slug}/').data
+        self.assertEqual(data['warranty']['code'], 'apple')
+        self.assertEqual(data['warranty']['battery_hours'], 2)
+        self.assertEqual(data['warranty_badge'], '6-month free service')
+        plans = APIClient().get('/api/store/warranty-plans/').data
+        self.assertEqual([x['code'] for x in plans], ['standard', 'basic', 'graphics', 'apple', 'monitor'])
+
+    def test_warranty_lookup_uses_each_purchase_plan(self):
+        from datetime import date, timedelta
+        from engage.models import CustomerPurchase
+        today = date.today()
+        CustomerPurchase.objects.create(phone='9876543210', sale_date=today - timedelta(days=200),
+                                        model_name='Dell Latitude 5420', amount='31500', source_ref='t:1')
+        CustomerPurchase.objects.create(phone='9876543210', sale_date=today - timedelta(days=200),
+                                        model_name='MacBook Pro 16', amount='79999', source_ref='t:2')
+        CustomerPurchase.objects.create(phone='9876543210', sale_date=today - timedelta(days=5),
+                                        model_name='Dell 27 Monitor', amount='9000', source_ref='t:3')
+        r = APIClient().get('/api/engage/warranty/', {'phone': '9876543210'})
+        self.assertEqual(r.status_code, 200, r.data)
+        items = r.data['items']
+        by = {i['product']: i for i in items}
+        self.assertEqual(by['Dell Latitude 5420']['status'], 'active')          # 1-year parts
+        self.assertEqual(by['MacBook Pro 16']['status'], 'expired')             # 6-month service ended
+        self.assertEqual(by['Dell 27 Monitor']['status'], 'no_warranty')
+
+
+class FormThrottleTests(TestCase):
+    def test_browsing_does_not_use_up_the_form_limit(self):
+        from django.core.cache import cache
+        cache.clear()
+        c = APIClient()
+        for _ in range(40):
+            c.get('/api/store/warranty-plans/')                       # ordinary browsing
+        r = c.get('/api/engage/warranty/', {'phone': '9000000001'})
+        self.assertNotEqual(r.status_code, 429)
