@@ -148,7 +148,8 @@ class ProductDetailSerializer(ProductListSerializer):
             'processor', 'ram', 'storage', 'display',
             'graphics', 'operating_system', 'battery',
             'weight', 'ports', 'wifi', 'bluetooth',
-            'reviews', 'service_centers', 'warranty_period', 'return_policy'
+            'reviews', 'service_centers', 'warranty_period', 'return_policy',
+            'video_url', 'video',
         ]
 
     def get_highlights_list(self, obj):

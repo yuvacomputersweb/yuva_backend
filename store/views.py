@@ -270,6 +270,12 @@ class ValidateCouponView(APIView):
                     {'error': f'Minimum order of ₹{coupon.min_order_value} required'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+            if coupon.first_order_only:
+                from orders.models import Order
+                if not request.user.is_authenticated:
+                    return Response({'error': 'Log in to use this first-order coupon'}, status=status.HTTP_400_BAD_REQUEST)
+                if Order.objects.filter(user=request.user, payment_status__in=['Paid', 'Deposit Paid']).exists():
+                    return Response({'error': 'This coupon is only for your first order'}, status=status.HTTP_400_BAD_REQUEST)
 
             discount = (
                 (order_total * coupon.value / 100)

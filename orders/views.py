@@ -146,6 +146,10 @@ class CheckoutView(APIView):
                                 {'error': f'Minimum order of ₹{coupon.min_order_value} required'},
                                 status=400
                             )
+                        if coupon.first_order_only and Order.objects.filter(
+                            user=request.user, payment_status__in=['Paid', 'Deposit Paid']
+                        ).exists():
+                            return Response({'error': 'This coupon is only for your first order'}, status=400)
                         discount_amount = (
                             (subtotal * coupon.value / 100)
                             if coupon.discount_type == 'percentage'

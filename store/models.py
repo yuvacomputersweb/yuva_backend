@@ -116,6 +116,15 @@ class Product(models.Model):
     )
 
     # Homepage toggles
+    video_url = models.URLField(
+        max_length=500, blank=True,
+        help_text="YouTube / YouTube Shorts link of the actual unit (recommended — loads fastest)."
+    )
+    video = models.FileField(
+        upload_to='product_videos/', blank=True,
+        help_text="Or upload a short MP4 (under 20 MB). Used only when there is no video link."
+    )
+
     is_new_arrival = models.BooleanField(default=False)
     is_best_seller = models.BooleanField(default=False)
     is_trending = models.BooleanField(default=False)
@@ -202,6 +211,17 @@ class SiteConfig(models.Model):
         max_length=20, default='919709888456',
         help_text="Include country code, no + sign. e.g. 919709888456"
     )
+    alert_whatsapp_numbers = models.CharField(
+        max_length=200, default='919709888456', blank=True,
+        help_text="Who gets shop alerts (new leads, low stock, daily summary). Comma-separated, with country code."
+    )
+    low_stock_threshold = models.PositiveIntegerField(
+        default=1, help_text="Send a low-stock alert when a configuration drops to this many units."
+    )
+    in_the_box = models.TextField(
+        default="Original charger\nFree laptop bag\nFree wireless mouse", blank=True,
+        help_text="Shown as 'What's in the box' on laptop pages. One item per line."
+    )
 
     class Meta:
         verbose_name = "Site Configuration"
@@ -224,6 +244,11 @@ class Coupon(models.Model):
     valid_to = models.DateTimeField()
     active = models.BooleanField(default=True)
     usage_limit = models.IntegerField(default=100)
+    description = models.CharField(
+        max_length=120, blank=True, help_text='Shown to customers, e.g. "Extra ₹500 off on your first order"'
+    )
+    is_public = models.BooleanField(default=False, help_text="Show this offer on product pages and at checkout.")
+    first_order_only = models.BooleanField(default=False, help_text="Only for customers who haven't ordered before.")
     uses_count = models.IntegerField(default=0)
 
     def is_valid(self):

@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'payments',
     'content',
     'mails',
+    'engage',
 ]
 
 SITE_ID = 1
@@ -248,6 +249,18 @@ WA_TEMPLATE_ORDER_DELIVERED  = os.environ.get('WA_TEMPLATE_ORDER_DELIVERED', 'or
 WA_TEMPLATE_ORDER_CANCELLED  = os.environ.get('WA_TEMPLATE_ORDER_CANCELLED', 'order_cancelled')
 
 SITE_URL = os.environ.get('SITE_URL', 'https://www.yuvacomputers.in')
+
+# Non-order WhatsApp templates (engage app). Empty string = switched off.
+WA_TEMPLATE_BACK_IN_STOCK = os.environ.get('WA_TEMPLATE_BACK_IN_STOCK', 'back_in_stock')
+WA_TEMPLATE_CART_REMINDER = os.environ.get('WA_TEMPLATE_CART_REMINDER', 'cart_reminder')
+WA_TEMPLATE_LOW_STOCK     = os.environ.get('WA_TEMPLATE_LOW_STOCK', 'low_stock_alert')
+WA_TEMPLATE_DAILY_SUMMARY = os.environ.get('WA_TEMPLATE_DAILY_SUMMARY', 'daily_summary')
+WA_TEMPLATE_NEW_LEAD      = os.environ.get('WA_TEMPLATE_NEW_LEAD', 'new_lead')
+WA_TEMPLATE_RETURN_UPDATE = os.environ.get('WA_TEMPLATE_RETURN_UPDATE', 'return_update')
+
+# Google reviews on the home page (Google Cloud → Places API (New)).
+GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+GOOGLE_PLACE_ID       = os.environ.get('GOOGLE_PLACE_ID', '')
 
 # Where Delhivery sends returned (RTO) parcels.
 DELHIVERY_RETURN_ADDRESS = {

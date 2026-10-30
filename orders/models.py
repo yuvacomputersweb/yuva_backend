@@ -132,6 +132,10 @@ class OrderItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
     image_url = models.TextField(blank=True)
+    serial_number = models.CharField(
+        max_length=60, blank=True, db_index=True,
+        help_text="Laptop serial / service tag. Customers can check warranty with it."
+    )
 
     def __str__(self):
         return f"{self.product_name} x{self.quantity}"
