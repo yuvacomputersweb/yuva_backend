@@ -304,3 +304,96 @@ class CategoryBrandListView(generics.ListAPIView):
     def get_queryset(self):
         category_slug = self.kwargs.get('slug')
         return Brand.objects.filter(products__category__slug=category_slug).distinct()
+
+
+class StockSyncView(APIView):
+    """
+    Stock pushed from the shop's stock app. Only `stock` changes.
+
+    POST /api/store/stock-sync/
+    Header:  X-Stock-Sync-Token: <settings.STOCK_SYNC_TOKEN>
+    Body:    {"items": [{"id": 11, "stock": 4},
+                        {"product_sku": "DELL-5420", "processor": "...", "ram": "8GB", "storage": "256GB SSD", "stock": 0}],
+              "dry_run": false}
+
+    A variant is found by `id`, or by product SKU + processor + RAM + storage
+    (the same keys as the admin Excel import). Each change is saved with
+    variant.save(update_fields=["stock"]) so the engage signals still send the
+    back-in-stock and low-stock WhatsApp messages.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    MAX_ITEMS = 2000
+
+    def post(self, request):
+        import secrets
+        from django.conf import settings
+        from .models import ProductVariant
+
+        expected = getattr(settings, 'STOCK_SYNC_TOKEN', '') or ''
+        if not expected:
+            return Response({'error': 'Stock sync is switched off (STOCK_SYNC_TOKEN not set)'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        given = request.headers.get('X-Stock-Sync-Token', '') or ''
+        if not secrets.compare_digest(given.encode(), expected.encode()):
+            return Response({'error': 'Invalid token'}, status=status.HTTP_403_FORBIDDEN)
+
+        items = request.data.get('items') if isinstance(request.data, dict) else None
+        if not isinstance(items, list):
+            return Response({'error': '"items" must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(items) > self.MAX_ITEMS:
+            return Response({'error': f'Too many items (max {self.MAX_ITEMS})'}, status=status.HTTP_400_BAD_REQUEST)
+        dry_run = bool(request.data.get('dry_run', False))
+
+        changed, not_found, errors = [], [], []
+        unchanged = 0
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append({'index': i, 'error': 'item must be an object'})
+                continue
+            try:
+                stock = int(item.get('stock'))
+            except (TypeError, ValueError):
+                errors.append({'index': i, 'error': '"stock" must be a whole number'})
+                continue
+            if stock < 0:
+                errors.append({'index': i, 'error': '"stock" cannot be negative'})
+                continue
+
+            qs = ProductVariant.objects.select_related('product')
+            variant = None
+            if item.get('id') not in (None, ''):
+                try:
+                    variant = qs.filter(id=int(item['id'])).first()
+                except (TypeError, ValueError):
+                    errors.append({'index': i, 'error': '"id" must be a number'})
+                    continue
+            else:
+                sku = str(item.get('product_sku') or '').strip()
+                if sku:
+                    variant = qs.filter(
+                        product__sku=sku,
+                        processor=str(item.get('processor') or '').strip(),
+                        ram=str(item.get('ram') or '').strip(),
+                        storage=str(item.get('storage') or '').strip(),
+                    ).first()
+            if variant is None:
+                not_found.append({'index': i, **{k: item.get(k) for k in ('id', 'product_sku', 'processor', 'ram', 'storage') if item.get(k) not in (None, '')}})
+                continue
+
+            if variant.stock == stock:
+                unchanged += 1
+                continue
+            old = variant.stock
+            if not dry_run:
+                variant.stock = stock
+                variant.save(update_fields=['stock'])
+            changed.append({'id': variant.id, 'product_sku': variant.product.sku, 'old': old, 'new': stock})
+
+        return Response({
+            'dry_run': dry_run,
+            'changed': changed,
+            'unchanged': unchanged,
+            'not_found': not_found,
+            'errors': errors,
+        })
