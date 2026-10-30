@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<div style="max-width:640px">
+  <p>Upload your sales register Excel. The importer reads the <b>Sales Register</b> sheet and needs at least
+     <b>Sale Date</b> and <b>Mobile</b> columns; <b>Customer Name</b>, <b>Store</b>, <b>Laptop / Model</b>,
+     <b>Amount</b>, <b>Notes</b> and <b>S.No</b> are used when present.</p>
+  <p>Files bigger than a few MB may be refused by the server; for the full history use the
+     <code>import_customers</code> command instead.</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <input type="submit" class="default" value="Import">
+  </form>
+</div>
+{% endblock %}

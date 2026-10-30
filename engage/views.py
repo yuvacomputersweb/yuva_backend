@@ -220,14 +220,6 @@ class TradeInView(APIView):
 REPLACEMENT_DAYS = 15
 
 
-def warranty_months(text: str) -> int | None:
-    text = (text or "").lower()
-    match = re.search(r"(\d+)\s*(year|yr|month|mon)", text)
-    if not match:
-        return None
-    value = int(match.group(1))
-    return value * 12 if match.group(2).startswith(("year", "yr")) else value
-
 
 def _add_months(dt, months: int):
     year, month = divmod(dt.month - 1 + months, 12)
@@ -240,18 +232,40 @@ def _add_months(dt, months: int):
     return dt
 
 
+def store_policy() -> tuple[int, int, str]:
+    """(testing days, parts months, summary) from Admin → Site Configuration."""
+    from store.models import SiteConfig
+
+    config = SiteConfig.objects.first()
+    if not config:
+        return REPLACEMENT_DAYS, 12, "1-Year Parts Warranty + 15-Day Testing Warranty"
+    return config.testing_warranty_days, config.parts_warranty_months, config.warranty_summary
+
+
+def _warranty_dates(start, replacement_days: int, months: int, today) -> dict:
+    replacement_end = start + timedelta(days=replacement_days)
+    end = _add_months(start, months)
+    return {
+        "replacement_until": replacement_end,
+        "replacement_open": today <= replacement_end,
+        "warranty_until": end,
+        "days_left": max((end - today).days, 0),
+        "status": "active" if today <= end else "expired",
+    }
+
+
 def warranty_for_item(item: OrderItem) -> dict:
     order = item.order
-    period = getattr(item.product, "warranty_period", "") or "1 Year Warranty"
-    months = warranty_months(period)
+    replacement_days, months, period = store_policy()
     start = order.delivered_at
-    today = timezone.now()
     result = {
+        "source": "online",
         "product": item.product_name,
         "variant": item.variant_label,
         "serial_number": item.serial_number,
         "order_id": order.id,
         "order_status": order.order_status,
+        "store": "",
         "purchased_on": order.created_at.date(),
         "delivered_on": start.date() if start else None,
         "warranty_period": period,
@@ -266,45 +280,64 @@ def warranty_for_item(item: OrderItem) -> dict:
         return result
     if not start:
         return result  # warranty starts on delivery
-    replacement_end = start + timedelta(days=REPLACEMENT_DAYS)
-    result["replacement_until"] = replacement_end.date()
-    result["replacement_open"] = today <= replacement_end
-    if months:
-        end = _add_months(start, months)
-        result["warranty_until"] = end.date()
-        result["days_left"] = max((end - today).days, 0)
-        result["status"] = "active" if today <= end else "expired"
-    else:
-        result["status"] = "active"
+    dates = _warranty_dates(start.date(), replacement_days, months, timezone.localdate())
+    result.update(dates)
+    return result
+
+
+def warranty_for_store_purchase(purchase) -> dict:
+    replacement_days, months, period = store_policy()
+    result = {
+        "source": "store",
+        "product": purchase.model_name or "Laptop",
+        "variant": "",
+        "serial_number": "",
+        "order_id": None,
+        "order_status": "Delivered",
+        "store": purchase.store,
+        "purchased_on": purchase.sale_date,
+        "delivered_on": purchase.sale_date,
+        "warranty_period": period,
+    }
+    result.update(_warranty_dates(purchase.sale_date, replacement_days, months, timezone.localdate()))
     return result
 
 
 class WarrantyLookupView(APIView):
-    """GET ?serial=ABC123  or  ?order_id=123&phone=9876543210"""
+    """GET ?serial=ABC123  or  ?order_id=123&phone=9876543210  or  ?phone=9876543210 (all purchases)."""
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [FormThrottle]
 
     def get(self, request):
+        from .models import CustomerPurchase
+
         serial = re.sub(r"[^A-Za-z0-9-]", "", request.query_params.get("serial", ""))
         items = OrderItem.objects.select_related("order", "product")
+        found = []
         if serial:
             if len(serial) < 4:
                 return Response({"error": "Enter the full serial number."}, status=400)
-            items = items.filter(serial_number__iexact=serial)
+            found = [warranty_for_item(i) for i in items.filter(serial_number__iexact=serial)[:10]]
+            if not found:
+                return Response({"error": "No laptop found with that serial number. Try your phone number instead."}, status=404)
         else:
             order_id = _digits(request.query_params.get("order_id"))
             phone = _valid_phone(request.query_params.get("phone"))
-            if not order_id or not phone:
-                return Response({"error": "Enter a serial number, or your order number and phone."}, status=400)
-            order = Order.objects.filter(pk=order_id).first()
-            if not order or _digits(order.phone)[-10:] != phone:
-                return Response({"error": "We couldn't find an order with that number and phone."}, status=404)
-            items = items.filter(order=order)
-        found = [warranty_for_item(i) for i in items[:10]]
-        if not found:
-            return Response({"error": "No laptop found with that serial number. Check the sticker under the laptop, or search by order number."}, status=404)
-        return Response({"items": found, "replacement_days": REPLACEMENT_DAYS})
+            if not phone:
+                return Response({"error": "Enter the 10-digit phone number you gave at purchase."}, status=400)
+            if order_id:
+                order = Order.objects.filter(pk=order_id).first()
+                if not order or _digits(order.phone)[-10:] != phone:
+                    return Response({"error": "We couldn't find an order with that number and phone."}, status=404)
+                found = [warranty_for_item(i) for i in items.filter(order=order)[:10]]
+            else:
+                online = items.filter(order__phone__endswith=phone).order_by("-order__created_at")[:10]
+                store = CustomerPurchase.objects.filter(phone=phone).order_by("-sale_date")[:10]
+                found = [warranty_for_item(i) for i in online] + [warranty_for_store_purchase(p) for p in store]
+            if not found:
+                return Response({"error": "We couldn't find a purchase with that phone number. WhatsApp us and we'll check for you."}, status=404)
+        return Response({"items": found[:10], "replacement_days": store_policy()[0]})
 
 
 # ── Google reviews ───────────────────────────────────────────────────────────
