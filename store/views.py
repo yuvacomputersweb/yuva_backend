@@ -306,6 +306,21 @@ class CategoryBrandListView(generics.ListAPIView):
         return Brand.objects.filter(products__category__slug=category_slug).distinct()
 
 
+def _stock_sync_denied(request):
+    """None when the X-Stock-Sync-Token header matches settings.STOCK_SYNC_TOKEN, else the error response."""
+    import secrets
+    from django.conf import settings
+
+    expected = getattr(settings, 'STOCK_SYNC_TOKEN', '') or ''
+    if not expected:
+        return Response({'error': 'Stock sync is switched off (STOCK_SYNC_TOKEN not set)'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    given = request.headers.get('X-Stock-Sync-Token', '') or ''
+    if not secrets.compare_digest(given.encode(), expected.encode()):
+        return Response({'error': 'Invalid token'}, status=status.HTTP_403_FORBIDDEN)
+    return None
+
+
 class StockSyncView(APIView):
     """
     Stock pushed from the shop's stock app. Only `stock` changes.
@@ -326,17 +341,11 @@ class StockSyncView(APIView):
     MAX_ITEMS = 2000
 
     def post(self, request):
-        import secrets
-        from django.conf import settings
         from .models import ProductVariant
 
-        expected = getattr(settings, 'STOCK_SYNC_TOKEN', '') or ''
-        if not expected:
-            return Response({'error': 'Stock sync is switched off (STOCK_SYNC_TOKEN not set)'},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        given = request.headers.get('X-Stock-Sync-Token', '') or ''
-        if not secrets.compare_digest(given.encode(), expected.encode()):
-            return Response({'error': 'Invalid token'}, status=status.HTTP_403_FORBIDDEN)
+        denied = _stock_sync_denied(request)
+        if denied:
+            return denied
 
         items = request.data.get('items') if isinstance(request.data, dict) else None
         if not isinstance(items, list):
@@ -396,4 +405,74 @@ class StockSyncView(APIView):
             'unchanged': unchanged,
             'not_found': not_found,
             'errors': errors,
+        })
+
+
+class StockSyncOrdersView(APIView):
+    """
+    Website orders for the shop's stock app, so online sales and cancellations
+    get recorded there before the next stock push. Read-only.
+
+    GET /api/store/stock-sync/orders/?since=<ISO datetime>
+    Header: X-Stock-Sync-Token
+
+    Returns orders changed after `since` (oldest first, max 200) that took stock
+    (payment_status Paid / Deposit Paid) or are Cancelled, plus `next_since`
+    to pass on the next call.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    LIMIT = 200
+
+    def get(self, request):
+        from datetime import timezone as dt_timezone
+        from django.utils.dateparse import parse_datetime
+        from orders.models import Order
+
+        denied = _stock_sync_denied(request)
+        if denied:
+            return denied
+
+        raw = request.query_params.get('since', '')
+        since = parse_datetime(raw) if raw else None
+        if raw and since is None:
+            return Response({'error': '"since" must be an ISO date-time'}, status=status.HTTP_400_BAD_REQUEST)
+        if since is not None and timezone.is_naive(since):
+            since = timezone.make_aware(since, dt_timezone.utc)
+
+        qs = Order.objects.filter(
+            Q(payment_status__in=['Paid', 'Deposit Paid']) | Q(order_status='Cancelled')
+        )
+        if since is not None:
+            qs = qs.filter(updated_at__gt=since)
+        orders = list(qs.order_by('updated_at', 'id').prefetch_related('items__variant__product')[:self.LIMIT])
+
+        data = []
+        for o in orders:
+            data.append({
+                'id': o.id,
+                'created_at': o.created_at.isoformat(),
+                'updated_at': o.updated_at.isoformat(),
+                'order_status': o.order_status,
+                'payment_status': o.payment_status,
+                'payment_method': o.payment_method,
+                'name': f"{o.first_name} {o.last_name}".strip(),
+                'phone': o.phone,
+                'city': o.city,
+                'total_amount': str(o.total_amount),
+                'items': [{
+                    'item_id': it.id,
+                    'variant_id': it.variant_id,
+                    'product_sku': it.variant.product.sku if it.variant and it.variant.product else '',
+                    'product_name': it.product_name,
+                    'variant_label': it.variant_label,
+                    'quantity': it.quantity,
+                    'price': str(it.price),
+                    'serial_number': it.serial_number,
+                } for it in o.items.all()],
+            })
+        return Response({
+            'orders': data,
+            'next_since': orders[-1].updated_at.isoformat() if orders else (since.isoformat() if since else timezone.now().isoformat()),
+            'more': len(orders) == self.LIMIT,
         })

@@ -77,3 +77,51 @@ class StockSyncTests(TestCase):
                                  {'id': self.v1.id, 'stock': 1}]})  # 5 -> 1: low stock
         back.assert_called_once()
         low.assert_called_once()
+
+
+@override_settings(STOCK_SYNC_TOKEN=TOKEN)
+class StockSyncOrdersTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from orders.models import Order, OrderItem
+        self.client = APIClient()
+        user = get_user_model().objects.create_user(email='c@example.com', password='x')
+        brand = Brand.objects.create(name='Dell', slug='dell')
+        cat = Category.objects.create(name='Laptops', slug='laptops')
+        product = Product.objects.create(title='Dell Latitude 5420', sku='DELL-5420', brand=brand, category=cat, price='30000')
+        self.v = ProductVariant.objects.create(product=product, processor='Intel Core i5 11th Gen', ram='8GB', storage='256GB SSD', stock=5)
+        def order(pay, st):
+            o = Order.objects.create(user=user, first_name='Ravi', phone='9876543210', city='Hyderabad', shipping_address='x',
+                                     total_amount='30000', payment_status=pay, order_status=st)
+            OrderItem.objects.create(order=o, product=product, variant=self.v, product_name='Dell Latitude 5420',
+                                     variant_label='i5/8/256', price='30000', quantity=1, serial_number='DZKNHW3')
+            return o
+        self.paid = order('Paid', 'Processing')
+        self.unpaid = order('Pending', 'Pending')
+        self.cancelled = order('Paid', 'Cancelled')
+
+    def get(self, q='', token=TOKEN):
+        return self.client.get('/api/store/stock-sync/orders/' + q, **({'HTTP_X_STOCK_SYNC_TOKEN': token} if token else {}))
+
+    def test_needs_token(self):
+        self.assertEqual(self.get(token=None).status_code, 403)
+
+    def test_lists_paid_and_cancelled_only(self):
+        r = self.get()
+        self.assertEqual(r.status_code, 200)
+        ids = [o['id'] for o in r.data['orders']]
+        self.assertEqual(sorted(ids), sorted([self.paid.id, self.cancelled.id]))
+        item = r.data['orders'][0]['items'][0]
+        self.assertEqual((item['variant_id'], item['product_sku'], item['quantity'], item['serial_number']),
+                         (self.v.id, 'DELL-5420', 1, 'DZKNHW3'))
+
+    def test_since_returns_only_newer_changes(self):
+        first = self.get().data
+        r = self.get('?since=' + first['next_since'].replace('+', '%2B'))
+        self.assertEqual(r.data['orders'], [])
+        self.paid.order_status = 'Cancelled'; self.paid.save()
+        r = self.get('?since=' + first['next_since'].replace('+', '%2B'))
+        self.assertEqual([o['id'] for o in r.data['orders']], [self.paid.id])
+
+    def test_bad_since(self):
+        self.assertEqual(self.get('?since=yesterday').status_code, 400)
