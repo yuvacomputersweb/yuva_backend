@@ -106,9 +106,12 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
+    # One storefront page view makes 8-10 API calls, and visitors on shared
+    # networks (offices, colleges, mobile carriers) share an IP, so the limit
+    # must allow a few hundred page views per IP per hour.
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/hour',
-        'user': '1000/hour',
+        'anon': '3000/hour',
+        'user': '5000/hour',
     },
 }
 
