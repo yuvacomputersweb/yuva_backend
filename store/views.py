@@ -306,6 +306,13 @@ class CategoryBrandListView(generics.ListAPIView):
         return Brand.objects.filter(products__category__slug=category_slug).distinct()
 
 
+def _flag(value) -> bool:
+    """JSON true/false, or the strings "true"/"1"/"yes"."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 def _stock_sync_denied(request):
     """None when the X-Stock-Sync-Token header matches settings.STOCK_SYNC_TOKEN, else the error response."""
     import secrets
@@ -339,8 +346,15 @@ class StockSyncView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     MAX_ITEMS = 2000
+    # Refuse a push that would suddenly sell out at least this many variants
+    # *and* more than this share of everything in stock (likely a broken list),
+    # unless the request sends "force": true.
+    MASS_SELLOUT_MIN = 5
+    MASS_SELLOUT_SHARE = 0.5
 
     def post(self, request):
+        import logging
+        from django.db import transaction
         from .models import ProductVariant
 
         denied = _stock_sync_denied(request)
@@ -352,9 +366,10 @@ class StockSyncView(APIView):
             return Response({'error': '"items" must be a list'}, status=status.HTTP_400_BAD_REQUEST)
         if len(items) > self.MAX_ITEMS:
             return Response({'error': f'Too many items (max {self.MAX_ITEMS})'}, status=status.HTTP_400_BAD_REQUEST)
-        dry_run = bool(request.data.get('dry_run', False))
+        dry_run = _flag(request.data.get('dry_run', False))
+        force = _flag(request.data.get('force', False))
 
-        changed, not_found, errors = [], [], []
+        plan, not_found, errors, seen = [], [], [], set()
         unchanged = 0
         for i, item in enumerate(items):
             if not isinstance(item, dict):
@@ -390,14 +405,37 @@ class StockSyncView(APIView):
                 not_found.append({'index': i, **{k: item.get(k) for k in ('id', 'product_sku', 'processor', 'ram', 'storage') if item.get(k) not in (None, '')}})
                 continue
 
+            if variant.id in seen:
+                errors.append({'index': i, 'id': variant.id, 'error': 'same variant listed twice; only the first row was used'})
+                continue
+            seen.add(variant.id)
+
             if variant.stock == stock:
                 unchanged += 1
                 continue
-            old = variant.stock
-            if not dry_run:
-                variant.stock = stock
-                variant.save(update_fields=['stock'])
-            changed.append({'id': variant.id, 'product_sku': variant.product.sku, 'old': old, 'new': stock})
+            plan.append((variant, stock))
+
+        in_stock = ProductVariant.objects.filter(stock__gt=0).count()
+        selling_out = sum(1 for v, s in plan if s == 0 and v.stock > 0)
+        if (not force and selling_out >= self.MASS_SELLOUT_MIN
+                and selling_out > self.MASS_SELLOUT_SHARE * max(in_stock, 1)):
+            return Response({
+                'error': f'This sync would mark {selling_out} of {in_stock} in-stock variants as sold out. '
+                         'Nothing was saved. Check the stock list, or send "force": true if it is correct.',
+            }, status=status.HTTP_409_CONFLICT)
+
+        changed = []
+        with transaction.atomic():
+            for variant, stock in plan:
+                old = variant.stock
+                if not dry_run:
+                    variant.stock = stock
+                    variant.save(update_fields=['stock'])
+                changed.append({'id': variant.id, 'product_sku': variant.product.sku, 'old': old, 'new': stock})
+        logging.getLogger('orders.services').info(
+            f"[StockSync] dry_run={dry_run} changed={len(changed)} unchanged={unchanged} "
+            f"not_found={len(not_found)} errors={len(errors)}"
+        )
 
         return Response({
             'dry_run': dry_run,

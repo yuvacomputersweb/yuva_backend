@@ -125,3 +125,39 @@ class StockSyncOrdersTests(TestCase):
 
     def test_bad_since(self):
         self.assertEqual(self.get('?since=yesterday').status_code, 400)
+
+
+@override_settings(STOCK_SYNC_TOKEN=TOKEN)
+class StockSyncSafetyTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        brand = Brand.objects.create(name='HP', slug='hp')
+        cat = Category.objects.create(name='Laptops 2', slug='laptops-2')
+        self.product = Product.objects.create(title='HP 840 G6', sku='HP-840', brand=brand, category=cat, price='25000')
+        self.variants = [ProductVariant.objects.create(product=self.product, processor=f'P{i}', ram='8GB',
+                                                       storage='256GB SSD', stock=2, price_override='0') for i in range(6)]
+
+    def post(self, body):
+        return self.client.post(URL, body, format='json', HTTP_X_STOCK_SYNC_TOKEN=TOKEN)
+
+    def test_refuses_a_sync_that_sells_out_most_of_the_shop(self):
+        body = {'items': [{'id': v.id, 'stock': 0} for v in self.variants]}
+        r = self.post(body)
+        self.assertEqual(r.status_code, 409)
+        self.assertFalse(ProductVariant.objects.filter(stock=0).exists())   # nothing saved
+        r = self.post({**body, 'force': True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(ProductVariant.objects.filter(stock=0).count(), 6)
+
+    def test_a_few_sell_outs_are_fine(self):
+        r = self.post({'items': [{'id': v.id, 'stock': 0} for v in self.variants[:2]]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data['changed']), 2)
+
+    def test_dry_run_string_false_saves_and_duplicates_are_reported(self):
+        v = self.variants[0]
+        r = self.post({'items': [{'id': v.id, 'stock': 3}, {'id': v.id, 'stock': 9}], 'dry_run': 'false'})
+        self.assertFalse(r.data['dry_run'])
+        v.refresh_from_db()
+        self.assertEqual(v.stock, 3)
+        self.assertIn('twice', r.data['errors'][0]['error'])
