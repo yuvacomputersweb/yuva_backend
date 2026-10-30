@@ -14,6 +14,7 @@ from django.urls import path
 from django.utils.html import format_html
 
 from .models import (
+    WarrantyPlan,
     Brand, Category, UsageTag, Product,
     ProductVariant, ProductImage, Review, SiteConfig, Coupon,
 )
@@ -178,7 +179,7 @@ class ProductVariantAdmin(admin.ModelAdmin):
 class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
     list_display = (
         "sku", "title", "brand", "category", "condition",
-        "price", "stock_mode", "stock", "is_new_arrival", "is_best_seller",
+        "price", "stock_mode", "stock", "warranty", "is_new_arrival", "is_best_seller",
         "is_trending", "is_best_deal", "is_active",
     )
     list_editable = (
@@ -191,6 +192,20 @@ class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
     filter_horizontal = ("usage_tags",)
     inlines = [ProductImageInline, ProductVariantInline]
 
+    _plan_cache: dict = {}
+
+    def changelist_view(self, request, extra_context=None):
+        self._plan_cache = {}  # fresh per page, so plan edits show straight away
+        return super().changelist_view(request, extra_context)
+
+    @admin.display(description="Warranty")
+    def warranty(self, obj):
+        from .warranty import plan_for_product
+        plan = plan_for_product(obj, self._plan_cache)
+        if not plan:
+            return "—"
+        return plan.name if obj.warranty_plan_id else f"{plan.name} (auto)"
+
     fieldsets = (
         ("Core Info", {
             "fields": (
@@ -200,6 +215,10 @@ class ProductAdmin(ExcelImportExportMixin, admin.ModelAdmin):
         }),
         ("Pricing", {
             "fields": ("price", "original_price")
+        }),
+        ("Warranty", {
+            "fields": ("warranty_plan",),
+            "description": "Leave empty and the right plan is picked automatically (shown in the product list).",
         }),
         ("Stock", {
             "fields": ("stock_mode", "stock"),
@@ -261,9 +280,9 @@ class SiteConfigAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Shipping & payment", {"fields": ("shipping_fee", "free_shipping_threshold", "cod_surcharge_percentage", "tax_percentage")}),
         ("WhatsApp", {"fields": ("whatsapp_number", "alert_whatsapp_numbers", "low_stock_threshold")}),
-        ("Warranty (same on every product)", {"fields": (
-            "warranty_summary", "testing_warranty_days", "parts_warranty_months",
-            "warranty_points", "warranty_exclusions", "warranty_claim_steps",
+        ("Warranty terms for all plans (plans: Store → Warranty plans)", {"fields": (
+            "shipping_assurance", "warranty_exclusions", "warranty_void_conditions",
+            "warranty_terms", "warranty_claim_steps",
         )}),
         ("Refurbishment & service (same on every product)", {"fields": (
             "refurbishment_summary", "refurbishment_points", "service_summary",
@@ -285,3 +304,19 @@ class CouponAdmin(admin.ModelAdmin):
     list_filter = ("active", "is_public", "first_order_only", "discount_type")
     search_fields = ("code",)
     readonly_fields = ("uses_count",)
+
+
+@admin.register(WarrantyPlan)
+class WarrantyPlanAdmin(admin.ModelAdmin):
+    list_display = ("name", "code", "badge", "testing_days", "parts_months", "free_service", "service_months", "battery_hours")
+    list_display_links = ("name",)
+    ordering = ("sort_order",)
+    readonly_fields = ("code",)
+    fieldsets = (
+        (None, {"fields": ("name", "code", "badge", "summary", "sort_order")}),
+        ("Cover", {"fields": ("testing_days", "parts_months", "free_service", "service_months", "battery_hours")}),
+        ("Shown to customers", {"fields": ("points",)}),
+    )
+
+    def has_delete_permission(self, request, obj=None):
+        return False  # the automatic rules look plans up by code

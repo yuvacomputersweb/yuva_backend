@@ -31,8 +31,13 @@ def _valid_phone(value) -> str | None:
 
 
 class FormThrottle(AnonRateThrottle):
-    """Public forms: stop bots from flooding the shop with fake leads."""
-    rate = '20/hour'
+    """Public forms: stop bots from flooding the shop with fake leads.
+
+    Own scope, so it counts form submissions only. Sharing the default 'anon'
+    scope would count every page a visitor browses and block the forms.
+    """
+    scope = 'engage_forms'
+    rate = '30/hour'
 
 
 # ── Delivery estimate by pincode ─────────────────────────────────────────────
@@ -217,7 +222,6 @@ class TradeInView(APIView):
 
 # ── Warranty lookup ──────────────────────────────────────────────────────────
 
-REPLACEMENT_DAYS = 15
 
 
 
@@ -232,31 +236,39 @@ def _add_months(dt, months: int):
     return dt
 
 
-def store_policy() -> tuple[int, int, str]:
-    """(testing days, parts months, summary) from Admin → Site Configuration."""
-    from store.models import SiteConfig
-
-    config = SiteConfig.objects.first()
-    if not config:
-        return REPLACEMENT_DAYS, 12, "1-Year Parts Warranty + 15-Day Testing Warranty"
-    return config.testing_warranty_days, config.parts_warranty_months, config.warranty_summary
-
-
-def _warranty_dates(start, replacement_days: int, months: int, today) -> dict:
-    replacement_end = start + timedelta(days=replacement_days)
-    end = _add_months(start, months)
+def coverage(plan, start, today) -> dict:
+    """Warranty dates for a plan starting on `start` (a date)."""
+    if plan is None:
+        return {"status": "active", "warranty_until": None, "days_left": None,
+                "replacement_until": None, "replacement_open": False}
+    replacement_end = start + timedelta(days=plan.testing_days) if plan.testing_days else None
+    months = plan.parts_months or (plan.service_months if plan.free_service else 0)
+    if months:
+        end = _add_months(start, months)
+    elif replacement_end:
+        end = replacement_end
+    else:
+        end = None
     return {
         "replacement_until": replacement_end,
-        "replacement_open": today <= replacement_end,
+        "replacement_open": bool(replacement_end and today <= replacement_end),
         "warranty_until": end,
-        "days_left": max((end - today).days, 0),
-        "status": "active" if today <= end else "expired",
+        "days_left": max((end - today).days, 0) if end else None,
+        "status": "no_warranty" if end is None else ("active" if today <= end else "expired"),
     }
 
 
-def warranty_for_item(item: OrderItem) -> dict:
+def _plan_fields(plan) -> dict:
+    from store.warranty import plan_data
+
+    return {"warranty_period": plan.name if plan else "Warranty", "plan": plan_data(plan)}
+
+
+def warranty_for_item(item: OrderItem, cache=None) -> dict:
+    from store.warranty import plan_for_product, plan_for_purchase
+
     order = item.order
-    replacement_days, months, period = store_policy()
+    plan = plan_for_product(item.product, cache) if item.product else plan_for_purchase(item.product_name, item.price, cache)
     start = order.delivered_at
     result = {
         "source": "online",
@@ -268,7 +280,7 @@ def warranty_for_item(item: OrderItem) -> dict:
         "store": "",
         "purchased_on": order.created_at.date(),
         "delivered_on": start.date() if start else None,
-        "warranty_period": period,
+        **_plan_fields(plan),
         "status": "not_started",
         "warranty_until": None,
         "days_left": None,
@@ -280,13 +292,14 @@ def warranty_for_item(item: OrderItem) -> dict:
         return result
     if not start:
         return result  # warranty starts on delivery
-    dates = _warranty_dates(start.date(), replacement_days, months, timezone.localdate())
-    result.update(dates)
+    result.update(coverage(plan, start.date(), timezone.localdate()))
     return result
 
 
-def warranty_for_store_purchase(purchase) -> dict:
-    replacement_days, months, period = store_policy()
+def warranty_for_store_purchase(purchase, cache=None) -> dict:
+    from store.warranty import plan_for_purchase
+
+    plan = plan_for_purchase(purchase.model_name, purchase.amount, cache)
     result = {
         "source": "store",
         "product": purchase.model_name or "Laptop",
@@ -297,9 +310,9 @@ def warranty_for_store_purchase(purchase) -> dict:
         "store": purchase.store,
         "purchased_on": purchase.sale_date,
         "delivered_on": purchase.sale_date,
-        "warranty_period": period,
+        **_plan_fields(plan),
     }
-    result.update(_warranty_dates(purchase.sale_date, replacement_days, months, timezone.localdate()))
+    result.update(coverage(plan, purchase.sale_date, timezone.localdate()))
     return result
 
 
@@ -312,13 +325,14 @@ class WarrantyLookupView(APIView):
     def get(self, request):
         from .models import CustomerPurchase
 
+        cache = {}
         serial = re.sub(r"[^A-Za-z0-9-]", "", request.query_params.get("serial", ""))
         items = OrderItem.objects.select_related("order", "product")
         found = []
         if serial:
             if len(serial) < 4:
                 return Response({"error": "Enter the full serial number."}, status=400)
-            found = [warranty_for_item(i) for i in items.filter(serial_number__iexact=serial)[:10]]
+            found = [warranty_for_item(i, cache) for i in items.filter(serial_number__iexact=serial)[:10]]
             if not found:
                 return Response({"error": "No laptop found with that serial number. Try your phone number instead."}, status=404)
         else:
@@ -330,14 +344,14 @@ class WarrantyLookupView(APIView):
                 order = Order.objects.filter(pk=order_id).first()
                 if not order or _digits(order.phone)[-10:] != phone:
                     return Response({"error": "We couldn't find an order with that number and phone."}, status=404)
-                found = [warranty_for_item(i) for i in items.filter(order=order)[:10]]
+                found = [warranty_for_item(i, cache) for i in items.filter(order=order)[:10]]
             else:
                 online = items.filter(order__phone__endswith=phone).order_by("-order__created_at")[:10]
                 store = CustomerPurchase.objects.filter(phone=phone).order_by("-sale_date")[:10]
-                found = [warranty_for_item(i) for i in online] + [warranty_for_store_purchase(p) for p in store]
+                found = [warranty_for_item(i, cache) for i in online] + [warranty_for_store_purchase(p, cache) for p in store]
             if not found:
                 return Response({"error": "We couldn't find a purchase with that phone number. WhatsApp us and we'll check for you."}, status=404)
-        return Response({"items": found[:10], "replacement_days": store_policy()[0]})
+        return Response({"items": found[:10]})
 
 
 # ── Google reviews ───────────────────────────────────────────────────────────

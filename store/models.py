@@ -53,6 +53,36 @@ class UsageTag(models.Model):
         return self.name
 
 
+class WarrantyPlan(models.Model):
+    """
+    A warranty package. Each product gets one automatically (see
+    store/warranty.py) unless a plan is picked on the product.
+    """
+    code = models.SlugField(unique=True, help_text="Used by the automatic rules: standard, basic, graphics, apple, monitor.")
+    name = models.CharField(max_length=80, help_text='e.g. "1-Year Warranty"')
+    badge = models.CharField(max_length=60, help_text="Short line for product cards and trust badges.")
+    summary = models.CharField(max_length=200)
+    testing_days = models.PositiveIntegerField(default=15, help_text="Testing warranty from the date of purchase. 0 = none.")
+    parts_months = models.PositiveIntegerField(
+        default=0, help_text="RAM & hard disk replacement + motherboard repair, in months. 0 = not included."
+    )
+    free_service = models.BooleanField(default=True, help_text="Free service at Yuva Service Lab (spare parts chargeable).")
+    service_months = models.PositiveIntegerField(
+        default=0, help_text="How long free service lasts, in months. 0 = no time limit."
+    )
+    battery_hours = models.PositiveSmallIntegerField(
+        default=1, help_text="Minimum battery backup guaranteed, in hours. 0 = not applicable."
+    )
+    points = models.TextField(help_text="What is covered, one point per line. Shown on the product's Warranty tab.")
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return self.name
+
+
 class Product(models.Model):
     CONDITION_CHOICES = [
         ('like_new', 'Like New'),
@@ -137,6 +167,12 @@ class Product(models.Model):
     )
     stock = models.PositiveIntegerField(
         default=0, help_text="Units of this model on hand. Used when stock mode is 'One stock for the model'."
+    )
+
+    warranty_plan = models.ForeignKey(
+        WarrantyPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name='products',
+        help_text="Leave empty to choose automatically: Apple → iStore plan; dedicated graphics → 6-month service; "
+                  "monitors → no warranty; under ₹15,000 → 15-day testing; others → 1-year warranty."
     )
 
     is_new_arrival = models.BooleanField(default=False)
@@ -270,40 +306,48 @@ class SiteConfig(models.Model):
     low_stock_threshold = models.PositiveIntegerField(
         default=1, help_text="Send a low-stock alert when a configuration drops to this many units."
     )
-    # ── One warranty and refurbishment policy for every product ──
-    testing_warranty_days = models.PositiveIntegerField(
-        default=15, help_text="Replacement window for any damage or problem after delivery."
-    )
-    parts_warranty_months = models.PositiveIntegerField(default=12)
-    warranty_summary = models.CharField(
-        max_length=120, default="1-Year Parts Warranty + 15-Day Testing Warranty",
-        help_text="Headline shown on every product's Warranty tab and trust badge."
-    )
-    warranty_points = models.TextField(
-        default=(
-            "15-day testing warranty: replacement for any damage or problem found in the first 15 days\n"
-            "RAM and hard disk / SSD: 1-year replacement warranty\n"
-            "Motherboard: 1-year repair warranty (if repairable)\n"
-            "Battery and charger: covered by the 15-day testing warranty\n"
-            "Lifetime service support at every Yuva store"
-        ),
-        help_text="What is covered. One point per line."
+    # ── Warranty terms shared by every plan (plans themselves: Warranty plans) ──
+    shipping_assurance = models.TextField(
+        default=("Damaged in transit? It's on us. Record a clear, uncut video while opening the sealed "
+                 "package — we need it to approve a transit-damage claim."),
+        help_text="Shown on every product."
     )
     warranty_exclusions = models.TextField(
         default=(
-            "Physical damage, cracks, dents or a broken screen after delivery\n"
-            "Liquid or water damage, burnt parts or power-surge damage\n"
-            "Warranty sticker removed or repairs done outside Yuva\n"
-            "Software, virus or data issues (we can reinstall the OS for you)"
+            "Burn and physical damage: cracks, dents, broken body or hinges\n"
+            "Keyboard, speakers and screen\n"
+            "Liquid or water damage of any kind\n"
+            "Battery, beyond the minimum backup guaranteed for the product\n"
+            "Spare parts not listed in the product's warranty"
         ),
-        blank=True, help_text="What is not covered. One point per line."
+        blank=True, help_text="Not covered by any plan. One point per line. Shown on the warranty policy page."
+    )
+    warranty_void_conditions = models.TextField(
+        default=(
+            "Warranty sticker or seal broken, removed or tampered with\n"
+            "Device opened or repaired outside Yuva Service Lab\n"
+            "Serial number removed or not matching our records\n"
+            "Original invoice not produced at the time of claim"
+        ),
+        blank=True, help_text="Warranty is void if… One point per line. Shown on the warranty policy page."
+    )
+    warranty_terms = models.TextField(
+        default=(
+            "Once goods are sold they cannot be taken back as a return. Exchange or replacement within the testing period only if the device is undamaged and in the same condition as delivered.\n"
+            "No free part replacement other than what the product's warranty lists. Other parts are chargeable.\n"
+            "Repairs at Yuva Service Lab carry a 15-day warranty on the same repair, from the date of delivery.\n"
+            "Transit-damage claims need an unboxing video recorded while opening the sealed package.\n"
+            "Data backup is the customer's responsibility.\n"
+            "Yuva Computers' decision on warranty eligibility is final."
+        ),
+        blank=True, help_text="Terms & conditions. One point per line. Shown on the warranty policy page."
     )
     warranty_claim_steps = models.TextField(
         default=(
-            "WhatsApp us your order number or serial number and a short video of the problem\n"
+            "WhatsApp our service team on 9347145456 with your invoice or order number and a short video of the problem\n"
             "Our technician checks it, usually the same day\n"
             "Bring it to any Yuva store, or ship it back with Delhivery\n"
-            "We replace or repair it and return it to you"
+            "We repair or replace it as per your warranty and return it to you"
         ),
         blank=True, help_text="How to claim. One step per line."
     )

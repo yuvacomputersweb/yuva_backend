@@ -3,7 +3,7 @@ from .views import (
     BrandListView, CategoryListView, UsageTagListView,
     ProductListView, ProductDetailView, ReviewListCreateView,
     HomeDataView, SiteConfigView, GlobalSearchView, ValidateCouponView,CategoryBrandListView,
-    StockSyncView, StockSyncOrdersView,
+    StockSyncView, StockSyncOrdersView, WarrantyPlansView,
 )
 
 urlpatterns = [
@@ -18,6 +18,7 @@ urlpatterns = [
     path('search/', GlobalSearchView.as_view(), name='search'),
     path('validate-coupon/', ValidateCouponView.as_view(), name='validate-coupon'),
     path('categories/<slug:slug>/brands/', CategoryBrandListView.as_view(), name='category-brands'),
+    path('warranty-plans/', WarrantyPlansView.as_view(), name='warranty-plans'),
     path('stock-sync/', StockSyncView.as_view(), name='stock-sync'),
     path('stock-sync/orders/', StockSyncOrdersView.as_view(), name='stock-sync-orders'),
 ]

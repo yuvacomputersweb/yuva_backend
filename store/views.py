@@ -541,3 +541,13 @@ class StockSyncOrdersView(APIView):
             'next_since': orders[-1].updated_at.isoformat() if orders else (since.isoformat() if since else timezone.now().isoformat()),
             'more': len(orders) == self.LIMIT,
         })
+
+
+class WarrantyPlansView(APIView):
+    """All warranty plans, for the warranty policy page. Terms come from /store/config/."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .models import WarrantyPlan
+        from .warranty import plan_data
+        return Response([plan_data(p) for p in WarrantyPlan.objects.all()])

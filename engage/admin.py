@@ -11,7 +11,10 @@ from django.utils.html import format_html
 
 from .customer_import import import_sales_register
 from .models import CartSnapshot, CustomerPurchase, StockAlert, TradeInRequest, WhatsAppMessage
-from .views import _add_months, store_policy
+from .views import _add_months, coverage
+
+# Filters use the standard plan (15-day testing, 1-year parts warranty).
+TESTING_DAYS, PARTS_MONTHS = 15, 12
 
 
 @admin.register(TradeInRequest)
@@ -88,7 +91,7 @@ def _months_ago(months: int) -> date:
 
 
 class WarrantyFilter(admin.SimpleListFilter):
-    title = 'warranty'
+    title = 'warranty (1-year plan)'
     parameter_name = 'warranty'
 
     def lookups(self, request, model_admin):
@@ -100,7 +103,7 @@ class WarrantyFilter(admin.SimpleListFilter):
         ]
 
     def queryset(self, request, qs):
-        days, months, _ = store_policy()
+        days, months = TESTING_DAYS, PARTS_MONTHS
         today = timezone.localdate()
         start = _add_months(today, -months)  # bought after this → still covered
         if self.value() == 'testing':
@@ -162,14 +165,20 @@ class CustomerPurchaseAdmin(admin.ModelAdmin):
 
     @admin.display(description='Warranty')
     def warranty(self, obj):
-        days, months, _ = store_policy()
-        today = timezone.localdate()
-        end = _add_months(obj.sale_date, months)
-        if obj.sale_date >= today - timedelta(days=days):
-            return format_html('<b style="color:#4c8a1f">Testing period</b>')
-        if end >= today:
-            return format_html('<span style="color:#4c8a1f">Till {}</span>', end.strftime('%d %b %Y'))
-        return format_html('<span style="color:#999">Expired</span>')
+        from store.warranty import plan_for_purchase
+
+        plan = plan_for_purchase(obj.model_name, obj.amount, self._plan_cache)
+        c = coverage(plan, obj.sale_date, timezone.localdate())
+        name = plan.badge if plan else ''
+        if c['status'] == 'no_warranty':
+            return format_html('<span style="color:#999">{}</span>', name or 'No warranty')
+        if c['status'] == 'active':
+            return format_html('<span style="color:#4c8a1f">{} · till {}</span>', name, c['warranty_until'].strftime('%d %b %Y'))
+        return format_html('<span style="color:#999">{} · expired</span>', name)
+
+    def changelist_view(self, request, extra_context=None):
+        self._plan_cache = {}
+        return super().changelist_view(request, extra_context)
 
     @admin.action(description='Export selected for WhatsApp / Meta ads (CSV, one row per phone, skips opt-outs)')
     def export_for_whatsapp(self, request, queryset):
