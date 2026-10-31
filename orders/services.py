@@ -63,6 +63,14 @@ def process_order_logistics_and_notification(order) -> None:
         order.tracking_link = f"https://www.delhivery.com/track-v2/package/{order.delhivery_waybill}"
         order.save(update_fields=["tracking_link"])
 
+    # Server-side Purchase for Meta ads (sent once; never blocks the order).
+    try:
+        from .meta_capi import send_purchase
+        send_purchase(order)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[MetaCAPI] Order #{order.id}: {exc}")
+
+
 
 # ─── DELHIVERY ───────────────────────────────────────────────────────────────
 

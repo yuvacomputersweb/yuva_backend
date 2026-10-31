@@ -104,6 +104,10 @@ class Order(models.Model):
         max_length=100, blank=True, null=True,
         help_text="Auto-filled waybill ID from Delhivery after shipment creation"
     )
+    tracking = models.JSONField(
+        default=dict, blank=True,
+        help_text="Ad attribution captured at checkout (browser, IP, Meta cookies) and what was reported."
+    )
     whatsapp_sent = models.BooleanField(
         default=False,
         help_text="True once the 'Order Placed' WhatsApp message has been sent"
