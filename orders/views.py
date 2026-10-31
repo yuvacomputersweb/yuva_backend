@@ -50,6 +50,18 @@ def order_detail(request, pk):
         return Response({'error': 'Order not found'}, status=404)
 
 
+
+def _checkout_tracking(request) -> dict:
+    """Browser details for the server-side Meta Purchase event (Conversions API)."""
+    sent = request.data.get('tracking') if isinstance(request.data.get('tracking'), dict) else {}
+    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    return {
+        'ip': (forwarded.split(',')[0].strip() if forwarded else request.META.get('REMOTE_ADDR', ''))[:64],
+        'ua': request.META.get('HTTP_USER_AGENT', '')[:400],
+        'fbp': str(sent.get('fbp', ''))[:200],
+        'fbc': str(sent.get('fbc', ''))[:200],
+    }
+
 class CheckoutView(APIView):
     """
     COD charge logic (correct business spec):
@@ -246,6 +258,7 @@ class CheckoutView(APIView):
 
                 # ── 8. Create order record ────────────────────────────────────
                 order = Order.objects.create(
+                    tracking=_checkout_tracking(request),
                     user=request.user,
                     first_name=first_name,
                     last_name=last_name,

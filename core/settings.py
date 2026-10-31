@@ -197,6 +197,12 @@ RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET')
 # Razorpay Dashboard → Webhooks: confirms payments even if the customer closes the page.
 RAZORPAY_WEBHOOK_SECRET = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
 
+# --- Meta Conversions API (server-side Purchase); empty token = off ---
+META_PIXEL_ID = os.environ.get('META_PIXEL_ID', '4569514659995738')
+META_CAPI_TOKEN = os.environ.get('META_CAPI_TOKEN', '')
+META_CAPI_TEST_CODE = os.environ.get('META_CAPI_TEST_CODE', '')   # Events Manager → Test events
+META_GRAPH_VERSION = os.environ.get('META_GRAPH_VERSION', 'v22.0')
+
 # --- TIMEZONE ---
 TIME_ZONE = 'Asia/Kolkata'
 USE_TZ = True
